@@ -2,6 +2,9 @@
 Format: Keep a Changelog. Setiap perubahan perilaku trading wajib tercatat.
 
 ## [Unreleased]
+- **M01:** Implementasikan tipe domain venue-agnostik `bot-types` (§3.4–§3.5: `Symbol`, `Price`/`Qty` `Decimal`, `Venue`, `InstrumentKey`, `VenueState`, `VenueCaps`, `ProtectionScheme`, `Kline`, `Order`, `Position`, `EngineMode`, `TradingMode`) dengan serialisasi `Decimal` sebagai string dan timestamp RFC 3339.
+- **M01:** Tambahkan `InstrumentRules` + pembulatan presisi murni (`floor_to_step`, `round_to_tick`, `floor_to_tick`, `ceil_to_tick`) dan validasi `TRADING`/`min_qty`/`max_qty`/`min_notional` dengan `proptest` serta catat verifikasi filter notional Spot vs Futures di `docs/verified-facts.md`.
+- **M01:** Implementasikan `bot-config` lengkap sesuai §9 (`#[serde(deny_unknown_fields)]`, layering `default → bot.toml → conf.d/*.toml → BOT__*` via `figment`), validasi rentang ketat §7.2/§7.8 tanpa clamp diam-diam (termasuk penolakan `cross` margin, `hedge` position mode, dan `mode=live` tanpa `live_confirmation_file`), aturan runtime tighten-only `is_tightening`, serta `packaging/bot.toml.example`.
 - **M00:** Scaffold Cargo workspace 15 crate (`crates/*`, MSRV Rust 1.86, `#![forbid(unsafe_code)]`, clippy pedantic + deny unwrap/expect/panic/indexing, `cargo-deny` v2, CI `.github/workflows/ci.yml`, `.gitignore`, ADR-0002).
 - **M00:** Tambahkan `bot-types::Secret<T>` dengan `Debug` ter-redact (`Secret(***)`) dan `zeroize` saat `Drop`.
 - **M00:** Inisialisasi skeleton `binance-botd` dengan structured JSON logging (`tracing-subscriber`, default `mode=paper`, tanpa logika trading/jaringan).

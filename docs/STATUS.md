@@ -1,12 +1,12 @@
 # STATUS
 
-**Milestone aktif:** M00 (selesai — menunggu persetujuan pemilik untuk lanjut ke M01)
+**Milestone aktif:** M01 (selesai — menunggu persetujuan pemilik untuk lanjut ke M02)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-22
 
 ## Progres
 - [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
-- [ ] **M01** — bot-types & bot-config  → `docs/milestones/M01-*.md`
+- [x] **M01** — bot-types & bot-config  → `docs/milestones/M01-*.md`
 - [ ] **M02** — bot-exchange Spot: REST + WS API session  → `docs/milestones/M02-*.md`
 - [ ] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
 - [ ] **M04** — bot-indicators  → `docs/milestones/M04-*.md`
@@ -28,6 +28,6 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-22 (M00):** Promosi metadata kit ke root repo (ADR-0002), `.gitignore`, CI `.github/workflows/ci.yml`, workspace Cargo 15 crate dengan `#![forbid(unsafe_code)]`, clippy pedantic + deny unwrap/expect/panic/indexing di non-test, `deny.toml` (`cargo-deny` v2), `bot-types::Secret<T>` (`zeroize` + redacted `Debug`), skeleton JSON tracing `binance-botd`, serta pencatatan 5 fakta terverifikasi dari `binance-docs` ke `docs/verified-facts.md` + sinkronisasi 3 koreksi kecil spec.
-- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 4/4 passed, `cargo deny check` ok, secret scan ok).
-- **Belum teruji:** belum ada logika bisnis, koneksi jaringan/testnet, maupun UI (di luar cakupan M00).
+- **2026-11-22 (M01):** Implementasikan seluruh tipe domain venue-agnostik `bot-types` (§3.4–§3.5) + `InstrumentRules` pembulatan/validasi `Decimal` presisi murni (`floor_to_step`, `round_to_tick`, `floor_to_tick`, `ceil_to_tick`, validasi `min_qty`/`max_qty`/`min_notional`/`TRADING`) dengan property test (`proptest`) & verifikasi filter notional Spot vs Futures di `docs/verified-facts.md`; implementasikan `bot-config` (§9 + §7.2 + §7.8) lengkap dengan `#[serde(deny_unknown_fields)]`, layering `default → bot.toml → conf.d/*.toml → BOT__*` via `figment`, validasi rentang & invarian keselamatan ketat tanpa clamp diam-diam, `is_tightening` (destructuring menyeluruh), serta `packaging/bot.toml.example`.
+- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 25/25 passed, `cargo deny check` ok, secret scan ok).
+- **Belum teruji:** konektivitas jaringan/testnet Binance, `VenueManager` switching runtime, persistence SQLite, maupun UI (di luar cakupan M01).

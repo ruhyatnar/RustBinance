@@ -5,6 +5,7 @@ mod decimal_serde;
 pub mod error;
 pub mod loader;
 pub mod schema;
+pub mod tighten;
 mod validate;
 
 pub use error::{ConfigError, LoosenError, LoosenViolation, RangeViolation};
@@ -19,3 +20,4 @@ pub use schema::{
     SafetyConfig, SizingMode, SpotVenueConfig, StorageConfig, StrategyConfig, TrendPullbackConfig,
     UniverseConfig, VenuesConfig, VwapReversionConfig,
 };
+pub use tighten::is_tightening;
