@@ -26,10 +26,13 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+bot-types = { path = "crates/bot-types", version = "0.1.0" }
+figment = { version = "0.10.19", features = ["toml", "env"] }
 proptest = "1.11.0"
 rust_decimal = { version = "1.43.0", features = ["serde", "serde-with-str"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tempfile = "3.27.0"
 thiserror = "2.0.21"
 time = { version = "0.3.45", features = ["serde", "serde-well-known", "formatting", "parsing"] }
 tracing = "0.1.44"
