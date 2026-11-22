@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bot-types",
+    "crates/bot-config",
+    "crates/bot-exchange",
+    "crates/bot-marketdata",
+    "crates/bot-indicators",
+    "crates/bot-strategy",
+    "crates/bot-risk",
+    "crates/bot-exec",
+    "crates/bot-store",
+    "crates/bot-ipc",
+    "crates/bot-venue",
+    "crates/bot-engine",
+    "crates/bot-backtest",
+    "crates/botd",
+    "crates/botctl",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"

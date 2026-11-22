@@ -1,0 +1,13 @@
+[package]
+name = "botd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "binance-botd"
+path = "src/main.rs"
+
+[lints]
+workspace = true
