@@ -142,9 +142,11 @@ pub fn load_config() -> Result<BotConfig, ConfigError> {
 /// Returns [`ConfigError`] on I/O, parse, unknown-field, or validation errors.
 pub fn load_from_paths(paths: &ConfigSourcePaths) -> Result<BotConfig, ConfigError> {
     let figment = build_figment(paths)?;
-    figment
+    let cfg = figment
         .extract::<BotConfig>()
-        .map_err(|err| ConfigError::Load(err.to_string()))
+        .map_err(|err| ConfigError::Load(err.to_string()))?;
+    cfg.validate()?;
+    Ok(cfg)
 }
 
 /// Loads [`BotConfig`] from explicit filesystem layers plus in-memory `SECTION__KEY` override pairs.
@@ -156,9 +158,11 @@ pub fn load_from_paths_with_env_pairs(
     env_pairs: &[(&str, &str)],
 ) -> Result<BotConfig, ConfigError> {
     let figment = build_figment(paths)?.merge(EnvPairsProvider { pairs: env_pairs });
-    figment
+    let cfg = figment
         .extract::<BotConfig>()
-        .map_err(|err| ConfigError::Load(err.to_string()))
+        .map_err(|err| ConfigError::Load(err.to_string()))?;
+    cfg.validate()?;
+    Ok(cfg)
 }
 
 /// Loads [`BotConfig`] by layering a TOML string on top of code defaults.
@@ -166,8 +170,10 @@ pub fn load_from_paths_with_env_pairs(
 /// # Errors
 /// Returns [`ConfigError`] on malformed TOML, unknown fields, or validation errors.
 pub fn load_from_toml_str(toml_str: &str) -> Result<BotConfig, ConfigError> {
-    Figment::from(Serialized::defaults(BotConfig::default()))
+    let cfg = Figment::from(Serialized::defaults(BotConfig::default()))
         .merge(Toml::string(toml_str))
         .extract::<BotConfig>()
-        .map_err(|err| ConfigError::Load(err.to_string()))
+        .map_err(|err| ConfigError::Load(err.to_string()))?;
+    cfg.validate()?;
+    Ok(cfg)
 }

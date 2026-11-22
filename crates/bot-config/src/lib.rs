@@ -5,6 +5,7 @@ mod decimal_serde;
 pub mod error;
 pub mod loader;
 pub mod schema;
+mod validate;
 
 pub use error::{ConfigError, LoosenError, LoosenViolation, RangeViolation};
 pub use loader::{
