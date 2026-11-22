@@ -25,6 +25,7 @@ rust-version = "1.86"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+zeroize = "1.9.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -49,6 +49,9 @@ version = "0.1.0"
 [[package]]
 name = "bot-types"
 version = "0.1.0"
+dependencies = [
+ "zeroize",
+]
 
 [[package]]
 name = "bot-venue"
@@ -61,3 +64,9 @@ version = "0.1.0"
 [[package]]
 name = "botd"
 version = "0.1.0"
+
+[[package]]
+name = "zeroize"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
