@@ -1,11 +1,11 @@
 # STATUS
 
-**Milestone aktif:** M00
+**Milestone aktif:** M00 (selesai — menunggu persetujuan pemilik untuk lanjut ke M01)
 **Mode build:** paper (tidak ada live)
-**Terakhir diperbarui:** (isi oleh agen)
+**Terakhir diperbarui:** 2026-11-22
 
 ## Progres
-- [ ] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
+- [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
 - [ ] **M01** — bot-types & bot-config  → `docs/milestones/M01-*.md`
 - [ ] **M02** — bot-exchange Spot: REST + WS API session  → `docs/milestones/M02-*.md`
 - [ ] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
@@ -28,4 +28,6 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-_(agen mengisi: apa yang selesai, tes lulus, belum teruji, risiko yang ditemukan)_
+- **2026-11-22 (M00):** Promosi metadata kit ke root repo (ADR-0002), `.gitignore`, CI `.github/workflows/ci.yml`, workspace Cargo 15 crate dengan `#![forbid(unsafe_code)]`, clippy pedantic + deny unwrap/expect/panic/indexing di non-test, `deny.toml` (`cargo-deny` v2), `bot-types::Secret<T>` (`zeroize` + redacted `Debug`), skeleton JSON tracing `binance-botd`, serta pencatatan 5 fakta terverifikasi dari `binance-docs` ke `docs/verified-facts.md` + sinkronisasi 3 koreksi kecil spec.
+- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 4/4 passed, `cargo deny check` ok, secret scan ok).
+- **Belum teruji:** belum ada logika bisnis, koneksi jaringan/testnet, maupun UI (di luar cakupan M00).
