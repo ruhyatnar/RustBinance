@@ -1,0 +1,19 @@
+# Rust & JS build artifacts
+target/
+node_modules/
+build/
+desktop-ui/build/
+web-ui/build/
+
+# Secrets & local runtime data
+*.pem
+*.key
+*.sqlite
+*.sqlite*
+keys/
+.env
+.env.*
+
+# Local code index / graph caches
+.codegraph/
+graphify-out/

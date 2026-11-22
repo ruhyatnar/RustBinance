@@ -10,7 +10,7 @@
 | Testnet WS API | `wss://ws-api.testnet.binance.vision/ws-api/v3` | `wss://testnet.binancefuture.com/ws-fapi/v1` `[VERIFY]` |
 | Testnet REST | `https://testnet.binance.vision` | `https://testnet.binancefuture.com` |
 
-* Auth: **Ed25519** (PKCS#8 PEM). Pada WS API kirim `session.logon` sekali per koneksi; request berikutnya tidak perlu `apiKey`/`signature` per-request. Kirim ulang `session.logon` setiap reconnect.
+* Auth: **Ed25519** (PKCS#8 PEM). Pada **Spot WS API** kirim `session.logon` sekali per koneksi; request berikutnya tidak perlu `apiKey`/`signature` per-request (kirim ulang setiap reconnect). Pada **Futures WS API**, `session.logon` tidak tersedia — request tetap memakai signing per-request (`apiKey`, `timestamp`, `signature`), dan setup akun (leverage/margin/positionMode/multiAssets) dilakukan lewat REST `/fapi/v1/*`.
 * Setiap request WS API wajib `id` unik (UUID v7) — dipakai peta korelasi.
 * Batas dasar `[VERIFY]` — **jangan di-hardcode**, baca `rateLimits` dari `exchangeInfo` saat start dan dari field `rateLimits` di setiap respons:
   * Koneksi baru: 300 per 5 menit per IP.
@@ -101,9 +101,9 @@ Kalkulasi mikro-struktur (opsional sebagai *filter lembut*, bukan pemicu):
 **Order**
 * Entry: `LIMIT` `timeInForce=GTX` (post-only; penolakan = kode `-5022`) untuk jalur pasif; `MARKET` hanya untuk darurat. `positionSide=BOTH`, `newClientOrderId` (5.2).
 * **Proteksi = order kondisional via Algo Service** (`algoType=CONDITIONAL`): 
-  * SL: `STOP_MARKET`, `closePosition=true`, `workingType=MARK_PRICE`, `priceProtect=true`.
-  * TP1: `TAKE_PROFIT_MARKET` dengan `quantity = Q×tp1_ratio` + `reduceOnly=true` (tidak boleh digabung `closePosition`).
-  * TP2/trailing runner: `TAKE_PROFIT_MARKET` reduce-only **atau** `TRAILING_STOP_MARKET` (`callbackRate`, `activationPrice`) bila trailing sisi-server dipilih; selain itu trailing software (5.5).
+  * SL: `STOP_MARKET`, `triggerPrice`, `closePosition=true`, `workingType=MARK_PRICE`, `priceProtect=true`, `clientAlgoId`.
+  * TP1: `TAKE_PROFIT_MARKET` dengan `triggerPrice`, `quantity = Q×tp1_ratio` + `reduceOnly=true`, `clientAlgoId` (tidak boleh digabung `closePosition`).
+  * TP2/trailing runner: `TAKE_PROFIT_MARKET` reduce-only **atau** `TRAILING_STOP_MARKET` (`callbackRate`, `activatePrice`, `clientAlgoId`) bila trailing sisi-server dipilih; selain itu trailing software (5.5).
   * Berbeda dari Spot, Futures **tidak mengunci saldo** per order → tidak perlu *Dual-OCO*. Penggeseran stop (BE/trailing) memakai **make-before-break**: pasang SL baru → tunggu `ALGO_UPDATE` `NEW` → batalkan SL lama (tanpa celah tak-terlindungi) `[VERIFY aturan duplikasi closePosition]`.
 * Jumlah semua `reduceOnly` ≤ posisi terbuka; setelah TP1 terisi, sinkronkan ulang qty TP2.
 * Dead-man: `countdownCancelAll` hanya untuk **order entry** yang menggantung (bukan proteksi) `[VERIFY]`.

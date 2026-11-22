@@ -14,7 +14,7 @@
 
 * Spot, quote `USDT` (opsi `USDC`/`FDUSD`), `status == TRADING`.
 * Core universe: `quoteVolume24h ≥ 50 juta USD` (konfig), spread median ≤ 5 bps, usia listing ≥ 90 hari. Scanner gainers: `≥ 10 juta USD`, spread ≤ 15 bps, usia ≥ 14 hari.
-* Eksklusi: token leverage (UP/DOWN/BULL/BEAR), stablecoin vs stablecoin, simbol bertanda monitoring/seed `[VERIFY sumber penanda di exchangeInfo/pengumuman]`, simbol `CANCEL_ONLY`/break.
+* Eksklusi: token leverage (UP/DOWN/BULL/BEAR), stablecoin vs stablecoin, simbol `CANCEL_ONLY`/break, serta daftar eksklusi statis di `bot.toml` (`exclude_symbols`) untuk simbol bertanda monitoring/seed (tag ini tidak diekspos di `exchangeInfo`).
 * Refresh universe tiap 15 menit; simbol keluar universe tidak boleh dibuka baru tetapi posisi yang ada tetap dikelola.
 
 ### 6.3. Indikator (spesifikasi tegas — agar tidak ambigu)
