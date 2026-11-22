@@ -9,4 +9,11 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+rust_decimal.workspace = true
+serde.workspace = true
+time.workspace = true
+uuid.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

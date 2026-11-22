@@ -26,9 +26,13 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+rust_decimal = { version = "1.43.0", features = ["serde", "serde-with-str"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+time = { version = "0.3.45", features = ["serde", "serde-well-known", "formatting", "parsing"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
 zeroize = "1.9.2"
 
 [workspace.lints.rust]

@@ -57,3 +57,17 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Sumber: `pacman -Q` dan `qmake6 --version` pada host CachyOS
 - Diverifikasi: 2026-11-22 oleh agen
 - Dampak ke spec: tidak ada (nama paket di `docs/spec/12-deployment.md` §12.2 sesuai).
+
+## Struktur `exchangeInfo.filters` & Filter Notional Spot vs Futures   (milestone: M01)
+- Fakta:
+  - **Spot** (`GET /api/v3/exchangeInfo`, `SPOT_REST.yaml` `symbols[].filters`):
+    - `PRICE_FILTER`: `minPrice`, `maxPrice`, `tickSize` (semua string desimal).
+    - `LOT_SIZE`: `minQty`, `maxQty`, `stepSize` (semua string desimal).
+    - `NOTIONAL` (filter notional utama Spot): `minNotional` (string), `applyMinToMarket` (bool), `maxNotional` (string), `applyMaxToMarket` (bool), `avgPriceMins` (integer).
+    - `MIN_NOTIONAL` (filter notional legacy/alternatif Spot): `minNotional` (string), `applyToMarket` (bool), `avgPriceMins` (integer).
+    - `PERCENT_PRICE_BY_SIDE`: `bidMultiplierUp`, `bidMultiplierDown`, `askMultiplierUp`, `askMultiplierDown`, `avgPriceMins`.
+  - **USDⓈ-M Futures** (`GET /fapi/v1/exchangeInfo`, `FUTURES_REST.yaml` `symbols[].filters`):
+    - Menggunakan field `notional` (string desimal, mis. `"5.0"`) untuk batas minimum notional (berbeda dari `minNotional` di Spot), bersama `tickSize`/`minPrice`/`maxPrice`, `stepSize`/`minQty`/`maxQty`, `multiplierUp`/`multiplierDown`.
+- Sumber: `binance-docs/SPOT_REST.yaml`, `binance-docs/FUTURES_REST.yaml` (`https://developers.binance.com/en/docs/products/spot`)
+- Diverifikasi: 2026-11-22 oleh agen
+- Dampak ke spec: tidak ada (`InstrumentRules` menormalisasi keduanya ke `min_notional: Decimal`; parser Spot di M02/M03 membaca `NOTIONAL` terlebih dahulu lalu fallback `MIN_NOTIONAL`, sedangkan parser Futures di M15 membaca field `notional`).
