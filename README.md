@@ -1,0 +1,2 @@
+# RustBinance
+binance bot
