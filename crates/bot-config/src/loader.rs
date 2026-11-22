@@ -1,6 +1,7 @@
 //! Layered configuration loader (`defaults -> bot.toml -> conf.d/*.toml -> BOT__* env`).
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -83,6 +84,20 @@ fn insert_nested(dict: &mut Dict, path: &[String], value: Value) {
     }
 }
 
+fn probe_optional_path(path: &Path) -> Result<Option<fs::Metadata>, ConfigError> {
+    match fs::symlink_metadata(path) {
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(ConfigError::Io {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        }),
+        Ok(_) => fs::metadata(path).map(Some).map_err(|err| ConfigError::Io {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        }),
+    }
+}
+
 fn sorted_conf_d_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     let entries = fs::read_dir(dir).map_err(|err| ConfigError::Io {
         path: dir.to_path_buf(),
@@ -99,7 +114,14 @@ fn sorted_conf_d_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"));
-        if is_toml && path.is_file() {
+        if !is_toml {
+            continue;
+        }
+        let meta = fs::metadata(&path).map_err(|err| ConfigError::Io {
+            path: path.clone(),
+            message: err.to_string(),
+        })?;
+        if meta.is_file() {
             files.push(path);
         }
     }
@@ -110,12 +132,24 @@ fn sorted_conf_d_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
 fn build_figment(paths: &ConfigSourcePaths) -> Result<Figment, ConfigError> {
     let mut figment = Figment::from(Serialized::defaults(BotConfig::default()));
     if let Some(base) = &paths.base_file {
-        if base.exists() {
+        if let Some(meta) = probe_optional_path(base)? {
+            if !meta.is_file() {
+                return Err(ConfigError::Io {
+                    path: base.clone(),
+                    message: "expected a regular file".to_owned(),
+                });
+            }
             figment = figment.merge(Toml::file(base));
         }
     }
     if let Some(conf_d) = &paths.conf_d_dir {
-        if conf_d.exists() {
+        if let Some(meta) = probe_optional_path(conf_d)? {
+            if !meta.is_dir() {
+                return Err(ConfigError::Io {
+                    path: conf_d.clone(),
+                    message: "expected a directory".to_owned(),
+                });
+            }
             for file in sorted_conf_d_files(conf_d)? {
                 figment = figment.merge(Toml::file(file));
             }

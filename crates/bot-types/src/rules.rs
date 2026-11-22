@@ -129,10 +129,15 @@ fn floor_decimal(
     if value < Decimal::ZERO {
         return Err(RulesError::NegativeValue(value));
     }
-    let rem = value
-        .checked_rem(step)
+    let norm_val = value.normalize();
+    let norm_step = step.normalize();
+    let rem = norm_val
+        .checked_rem(norm_step)
         .ok_or(RulesError::ArithmeticOverflow)?;
-    value.checked_sub(rem).ok_or(RulesError::ArithmeticOverflow)
+    norm_val
+        .checked_sub(rem)
+        .map(|d| d.normalize())
+        .ok_or(RulesError::ArithmeticOverflow)
 }
 
 /// Floors `qty` down to the nearest exact multiple of `step_size` (`result <= qty`).
@@ -165,24 +170,25 @@ pub fn round_to_tick(price: Price, tick_size: Decimal) -> Result<Price, RulesErr
     if price.0 < Decimal::ZERO {
         return Err(RulesError::NegativeValue(price.0));
     }
-    let rem = price
-        .0
-        .checked_rem(tick_size)
+    let norm_price = price.0.normalize();
+    let norm_tick = tick_size.normalize();
+    let rem = norm_price
+        .checked_rem(norm_tick)
         .ok_or(RulesError::ArithmeticOverflow)?;
-    let floored = price
-        .0
+    let floored = norm_price
         .checked_sub(rem)
         .ok_or(RulesError::ArithmeticOverflow)?;
-    let to_upper = tick_size
+    let to_upper = norm_tick
         .checked_sub(rem)
         .ok_or(RulesError::ArithmeticOverflow)?;
     if rem >= to_upper {
         floored
-            .checked_add(tick_size)
+            .checked_add(norm_tick)
+            .map(|d| d.normalize())
             .ok_or(RulesError::ArithmeticOverflow)
             .map(Price)
     } else {
-        Ok(Price(floored))
+        Ok(Price(floored.normalize()))
     }
 }
 
@@ -198,19 +204,20 @@ pub fn ceil_to_tick(price: Price, tick_size: Decimal) -> Result<Price, RulesErro
     if price.0 < Decimal::ZERO {
         return Err(RulesError::NegativeValue(price.0));
     }
-    let rem = price
-        .0
-        .checked_rem(tick_size)
+    let norm_price = price.0.normalize();
+    let norm_tick = tick_size.normalize();
+    let rem = norm_price
+        .checked_rem(norm_tick)
         .ok_or(RulesError::ArithmeticOverflow)?;
     if rem.is_zero() {
-        return Ok(price);
+        return Ok(Price(norm_price));
     }
-    let floored = price
-        .0
+    let floored = norm_price
         .checked_sub(rem)
         .ok_or(RulesError::ArithmeticOverflow)?;
     floored
-        .checked_add(tick_size)
+        .checked_add(norm_tick)
+        .map(|d| d.normalize())
         .ok_or(RulesError::ArithmeticOverflow)
         .map(Price)
 }
@@ -303,7 +310,8 @@ impl InstrumentRules {
         }
         let rem = qty
             .0
-            .checked_rem(self.step_size)
+            .normalize()
+            .checked_rem(self.step_size.normalize())
             .ok_or(RulesError::ArithmeticOverflow)?;
         if !rem.is_zero() {
             return Err(RulesError::QtyNotStepMultiple {
@@ -325,7 +333,8 @@ impl InstrumentRules {
         }
         let rem = price
             .0
-            .checked_rem(self.tick_size)
+            .normalize()
+            .checked_rem(self.tick_size.normalize())
             .ok_or(RulesError::ArithmeticOverflow)?;
         if !rem.is_zero() {
             return Err(RulesError::PriceNotTickMultiple {

@@ -125,6 +125,32 @@ fn round_to_tick_midpoint_rounds_half_up() {
     );
 }
 
+#[test]
+fn rounding_normalizes_trailing_zeros_from_division_and_exchange_scales() {
+    let repeating = Decimal::from(5) / Decimal::from(3); // 1.6666666666666666666666666667 (scale 28)
+    let floored = floor_to_step(Qty(repeating), dec("0.00100000")).expect("floor repeating");
+    assert_eq!(floored.to_string(), "1.666");
+
+    let rounded = round_to_tick(Price(dec("10.005")), dec("0.01000000")).expect("round midpoint");
+    assert_eq!(rounded.to_string(), "10.01");
+
+    let ceiled_exact = ceil_to_tick(Price(dec("10.000")), dec("0.01000000")).expect("ceil exact");
+    assert_eq!(ceiled_exact.to_string(), "10");
+
+    let floored_exact =
+        floor_to_tick(Price(dec("10.00900000")), dec("0.01000000")).expect("floor tick");
+    assert_eq!(floored_exact.to_string(), "10");
+
+    let mut rules = btc_rules();
+    rules.step_size = dec("0.00010000");
+    rules.tick_size = dec("0.01000000");
+    assert!(
+        rules
+            .validate_order(Price(dec("50000.01000000")), Qty(dec("0.00100000")))
+            .is_ok()
+    );
+}
+
 proptest! {
     #[test]
     fn prop_floor_to_step_is_multiple_and_le_input(

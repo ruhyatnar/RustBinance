@@ -138,4 +138,102 @@ fn missing_optional_paths_use_defaults_while_malformed_toml_fails() {
     })
     .expect_err("malformed toml must fail");
     assert!(matches!(err, ConfigError::Load(_)));
+
+    let conf_d = dir.path().join("conf.d");
+    fs::create_dir(&conf_d).expect("mkdir conf.d");
+    fs::write(conf_d.join("15-bad.toml"), "[risk\nbroken = ").expect("write bad conf.d toml");
+    let conf_d_err = load_from_paths(&ConfigSourcePaths {
+        base_file: None,
+        conf_d_dir: Some(conf_d),
+        env_prefix: None,
+    })
+    .expect_err("malformed conf.d toml must fail");
+    assert!(matches!(conf_d_err, ConfigError::Load(_)));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_paths_and_dangling_symlinks_return_io_error_instead_of_defaults() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // Dangling base_file symlink must fail with Io, not fall back to defaults
+    let dangling_base = dir.path().join("dangling_bot.toml");
+    symlink(dir.path().join("missing_target.toml"), &dangling_base).expect("create symlink");
+    let err = load_from_paths(&ConfigSourcePaths {
+        base_file: Some(dangling_base),
+        conf_d_dir: None,
+        env_prefix: None,
+    })
+    .expect_err("dangling base symlink must fail with Io");
+    assert!(matches!(err, ConfigError::Io { .. }), "got {err:?}");
+
+    // Dangling *.toml symlink inside conf.d must fail with Io, not be skipped
+    let conf_d = dir.path().join("conf_d_symlink");
+    fs::create_dir(&conf_d).expect("mkdir conf_d_symlink");
+    let dangling_dropin = conf_d.join("10-dangling.toml");
+    symlink(dir.path().join("missing_dropin.toml"), &dangling_dropin)
+        .expect("create dropin symlink");
+    let err = load_from_paths(&ConfigSourcePaths {
+        base_file: None,
+        conf_d_dir: Some(conf_d),
+        env_prefix: None,
+    })
+    .expect_err("dangling conf.d symlink must fail with Io");
+    assert!(matches!(err, ConfigError::Io { .. }), "got {err:?}");
+
+    // Unreadable directory containing bot.toml must fail with Io (PermissionDenied)
+    let locked_dir = dir.path().join("locked");
+    fs::create_dir(&locked_dir).expect("mkdir locked");
+    let locked_base = locked_dir.join("bot.toml");
+    fs::write(&locked_base, "[risk]\nrisk_per_trade_pct = 0.25\n").expect("write locked bot.toml");
+    fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).expect("chmod 000");
+
+    let perm_res = load_from_paths(&ConfigSourcePaths {
+        base_file: Some(locked_base),
+        conf_d_dir: None,
+        env_prefix: None,
+    });
+    fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o700)).expect("restore perms");
+    assert!(
+        matches!(perm_res, Err(ConfigError::Io { .. })),
+        "unreadable base path must return ConfigError::Io, got {perm_res:?}"
+    );
+}
+
+#[test]
+fn real_bot_env_prefix_overrides_config_via_child_process() {
+    if std::env::var("BOT_TEST_CHILD_ENV_PROBE").as_deref() == Ok("1") {
+        let cfg = load_from_paths(&ConfigSourcePaths {
+            base_file: None,
+            conf_d_dir: None,
+            env_prefix: Some("BOT__".to_owned()),
+        })
+        .expect("load_from_paths with real BOT__ env prefix");
+        assert_eq!(cfg.risk.risk_per_trade_pct, dec("0.25"));
+        assert_eq!(cfg.risk.futures.risk_per_trade_pct, dec("0.2"));
+        assert_eq!(cfg.venues.spot.capital_allocation_usd, dec("1234.5"));
+        return;
+    }
+
+    let exe = std::env::current_exe().expect("current test binary");
+    let output = std::process::Command::new(exe)
+        .args([
+            "--exact",
+            "real_bot_env_prefix_overrides_config_via_child_process",
+            "--nocapture",
+        ])
+        .env("BOT_TEST_CHILD_ENV_PROBE", "1")
+        .env("BOT__RISK__RISK_PER_TRADE_PCT", "0.25")
+        .env("BOT__RISK__FUTURES__RISK_PER_TRADE_PCT", "0.2")
+        .env("BOT__VENUES__SPOT__CAPITAL_ALLOCATION_USD", "1234.5")
+        .output()
+        .expect("spawn child test process");
+    assert!(
+        output.status.success(),
+        "child env probe failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

@@ -29,5 +29,5 @@ _(kosong)_
 
 ## Catatan sesi terakhir
 - **2026-11-22 (M01):** Implementasikan seluruh tipe domain venue-agnostik `bot-types` (§3.4–§3.5) + `InstrumentRules` pembulatan/validasi `Decimal` presisi murni (`floor_to_step`, `round_to_tick`, `floor_to_tick`, `ceil_to_tick`, validasi `min_qty`/`max_qty`/`min_notional`/`TRADING`) dengan property test (`proptest`) & verifikasi filter notional Spot vs Futures di `docs/verified-facts.md`; implementasikan `bot-config` (§9 + §7.2 + §7.8) lengkap dengan `#[serde(deny_unknown_fields)]`, layering `default → bot.toml → conf.d/*.toml → BOT__*` via `figment`, validasi rentang & invarian keselamatan ketat tanpa clamp diam-diam, `is_tightening` (destructuring menyeluruh), serta `packaging/bot.toml.example`.
-- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 25/25 passed, `cargo deny check` ok, secret scan ok).
+- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 28/28 passed, `cargo deny check` ok, secret scan ok).
 - **Belum teruji:** konektivitas jaringan/testnet Binance, `VenueManager` switching runtime, persistence SQLite, maupun UI (di luar cakupan M01).

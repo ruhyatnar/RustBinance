@@ -88,7 +88,13 @@ fn spot_risk_out_of_range_parameters_are_rejected_without_clamping() {
             c.risk.daily_loss_halt_pct = dec("-4.1");
         }),
         ("risk.weekly_loss_halt_pct", |c| {
+            c.risk.weekly_loss_halt_pct = dec("5.0");
+        }),
+        ("risk.weekly_loss_halt_pct", |c| {
             c.risk.weekly_loss_halt_pct = dec("-1.5");
+        }),
+        ("risk.drawdown_kill_pct", |c| {
+            c.risk.drawdown_kill_pct = dec("10.0");
         }),
         ("risk.drawdown_kill_pct", |c| {
             c.risk.drawdown_kill_pct = dec("-4.9");
