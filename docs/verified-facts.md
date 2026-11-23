@@ -125,5 +125,14 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Diverifikasi: 2026-11-23 oleh agen
 - Dampak ke spec: tidak ada (sesuai §4.4, §5.4, dan Lampiran A).
 
+## Spot Account Commission Rates (`account.commission`)   (milestone: M08)
+- Fakta:
+  - Method WS API: `account.commission` (USER_DATA), parameter wajib `symbol` (+ `timestamp`, opsional `recvWindow`).
+  - Respons `result` memuat `symbol`, `standardCommission.{maker, taker, buyer, seller}`, `specialCommission.{maker, taker, buyer, seller}`, `taxCommission.{maker, taker, buyer, seller}` (semua string desimal rasio, mis. `"0.00100000"` = 0.10% = 10 bps), serta `discount` (diskon BNB).
+  - Cost gate §6.5 wajib menerima `CommissionRates` (maker/taker dari `account.commission` via gateway) daripada meng-hardcode tarif VIP0.
+- Sumber: `binance-docs/SPOT_WS.yaml` (`https://developers.binance.com/en/docs/catalog/core-trading-spot-trading/api/ws-api/account#account-commission`)
+- Diverifikasi: 2026-11-23 oleh agen
+- Dampak ke spec: tidak ada (sesuai §6.1 & §6.5).
+
 
 

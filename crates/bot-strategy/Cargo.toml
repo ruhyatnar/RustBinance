@@ -7,3 +7,16 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bot-config = { path = "../bot-config", version = "0.1.0" }
+bot-indicators = { path = "../bot-indicators", version = "0.1.0" }
+bot-store = { path = "../bot-store", version = "0.1.0" }
+bot-types = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+insta = { version = "1.49.0", features = ["json"] }
+proptest = { workspace = true }

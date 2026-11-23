@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M07 (selesai — menunggu persetujuan pemilik untuk lanjut ke M08)
+**Milestone aktif:** M08 (selesai — menunggu persetujuan pemilik untuk lanjut ke M09)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-23
 
@@ -13,7 +13,7 @@
 - [x] **M05** — bot-store: SQLite journal/snapshot/recovery  → `docs/milestones/M05-*.md`
 - [x] **M06** — bot-risk: gatekeeper, sizing, breakers  → `docs/milestones/M06-*.md`
 - [x] **M07** — bot-exec + bot-engine + paper broker  → `docs/milestones/M07-*.md`
-- [ ] **M08** — bot-strategy: S1, S2, shadow S3/S4 (Long)  → `docs/milestones/M08-*.md`
+- [x] **M08** — bot-strategy: S1, S2, shadow S3/S4 (Long)  → `docs/milestones/M08-*.md`
 - [ ] **M09** — bot-backtest: replay & walk-forward  → `docs/milestones/M09-*.md`
 - [ ] **M10** — bot-ipc + botctl  → `docs/milestones/M10-*.md`
 - [ ] **M11** — web-ui  → `docs/milestones/M11-*.md`
@@ -28,8 +28,10 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-23 (M07):** Implementasikan `bot-exec` (sub-langkah a–f) dan `bot-engine` (sub-langkah g–h) serta catat verifikasi `orderList.place.oco`/`belowTrailingDelta`, `listStatus`, dan kode penolakan `LIMIT_MAKER` `-2010` di `docs/verified-facts.md`:
-  - `bot-exec`: `client_id` deterministik (`{bot}r{run}{S|F}-{seq:06}-{purpose}`), `OrderFsm` (§5.3: dedup fill idempoten per `(venue, symbol, trade_id)`, `filled_qty` monoton, resolusi `UnknownNeedsQuery` 3×), `PaperBroker` di balik `ExchangeGateway + VenueAdapter` (fee maker/taker, slippage, `-2010`, `cancelReplace`, Dual-OCO + auto-cancel leg pasangan), `execute_passive_entry` (§5.4 journal-first `OrderIntended`, chasing terbatas, retry `-2010` di tick book berikutnya), `DualOcoManager` (§4.4) + `HardStopWatcher` (§5.5), `evaluate_position_tick` (§5.5 urutan keselamatan dulu + laporan PnL), serta `reconcile_venue` (§8.3 + `orphan_policy`).
-  - `bot-engine`: `EngineActor` single-writer (§3.2–§3.3: command `mpsc(64)` → `Busy`, user events `mpsc(4096)`, telemetry `watch`, seluruh entry lewat `Gatekeeper` + journal-first) dan shutdown SIGTERM (Aturan Keras #7: batalkan hanya order entry pending, **proteksi OCO tetap aktif**).
-  - **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 88/88 — termasuk `proptest` invarian FSM & `hard_stop_grace_ms`, E2E paper entry → TP1 → BE → trailing → TP2, stop-loss, time-stop, orphan `Flatten`/`AdoptWithStop`, crash proses anak `abort()` pada `EntryPending`/`OpenProtected`/`ExitPending`, dan uji eksplisit SIGTERM proteksi tetap; `cargo deny check` ok; secret scan ok).
-  - **Belum teruji:** Strategi trading (M08), IPC/CLI/UI (M10–M12), Futures (M15–M16), dan commit M07 belum di-`git push`.
+- **2026-11-23 (M08):** Implementasikan `bot-strategy` (§6.3–§6.5) sebagai penghasil `StrategyEntryIntent` murni tanpa sizing/order dan catat verifikasi `account.commission` di `docs/verified-facts.md`:
+  - `Strategy` trait (`supports(&VenueCaps, Direction)`, `on_bar_close`, `evaluate` dengan `Vec<GateLog>` terstruktur untuk UI Signals), `IndicatorFeed` & `HtfRegimeFeed` (inkremental O(1), hanya bar closed).
+  - `S1TrendPullback` (Long: HTF 4h `close > EMA50` & naik 3 bar, 1h `EMA21 > EMA55` & `close > EMA200`, pullback 3 bar, RSI naik, ADX ≥ 20 & `+DI > -DI`, volume ≥ 0.8×SMA20, anti-overextension, filter OBI opsional) dan `S2Breakout` (Long: `close > Donchian(20).upper`, volume ≥ 1.5×SMA20, ADX ≥ 18 naik, RSI 52–75, HTF searah, stop Donchian mid / 2×ATR).
+  - Pagar kualitas §6.5 (`evaluate_quality_gates`): cost gate dengan `CommissionRates` aktual dari `account.commission`, spread & kesegaran `bookTicker < 500ms`, gap-free 300 bar, rezim BTC 4h, vol targeting (`clamp(target/realized, 0.5, 1.25)` + cap `<= 0.6` bila ATR% persentil 90d > 85), cooldown 4 bar, dan macro blackout.
+  - Kerangka **shadow** (`S3GainersShadow` + `rank_gainers_top_k`, `S4VwapReversionShadow` default disabled): tipe `ShadowSignal` terpisah dari `StrategyEntryIntent` (secara arsitektur tidak bisa membuat order) dan tercatat ke `signals_shadow` SQLite.
+  - **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 92/92 — termasuk golden snapshot `insta`, tes anti look-ahead perturbasi bar masa depan, tes cost gate `< 3×` biaya, dan uji shadow S3/S4 ke `signals_shadow`; `cargo deny check` ok; secret scan ok).
+  - **Belum teruji:** Sisi Short (M16), S3 live (pasca gerbang shadow), dan backtest walk-forward (M09); commit M08 belum di-`git push`.

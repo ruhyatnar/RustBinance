@@ -1,0 +1,504 @@
+---
+source: crates/bot-strategy/tests/strategy_suite.rs
+expression: signals
+---
+[
+  [
+    649,
+    {
+      "venue": "spot",
+      "symbol": "ETHUSDT",
+      "direction": "Long",
+      "entry_ref": "258.46768035",
+      "stop": "252.77127481",
+      "tp1": "267.012288660",
+      "tp2": "275.556896970",
+      "atr": "3.38117850",
+      "size_mult": "1",
+      "strategy": "TrendPullback",
+      "rationale": "S1 Trend-Pullback Long: 4h bullish, 1h EMA21>EMA55, RSI 53.9 rising, ADX 60.2",
+      "gate_logs": [
+        {
+          "gate": "htf_regime",
+          "passed": true,
+          "detail": "4h close 254.3813 > EMA50 231.1007 (rising 3 bars)"
+        },
+        {
+          "gate": "trend_1h",
+          "passed": true,
+          "detail": "EMA21 257.9837 > EMA55 254.0031 & close > EMA200 231.2743"
+        },
+        {
+          "gate": "pullback",
+          "passed": true,
+          "detail": "min_low_3=253.1094, close=258.4677 reclaimed EMA21"
+        },
+        {
+          "gate": "momentum",
+          "passed": true,
+          "detail": "RSI 53.91 > 44.52, ADX 60.23, +DI > -DI"
+        },
+        {
+          "gate": "volume",
+          "passed": true,
+          "detail": "vol 1500.00 >= 0.8x SMA20 (1070.00)"
+        },
+        {
+          "gate": "anti_overextension",
+          "passed": true,
+          "detail": "|close - EMA21| <= 1.5*ATR"
+        },
+        {
+          "gate": "closed_bar_and_gaps",
+          "passed": true,
+          "detail": "closed bar with 300-bar continuity"
+        },
+        {
+          "gate": "cost_gate",
+          "passed": true,
+          "detail": "reward 330.58 bps >= 3.0x round-trip (78.00 bps)"
+        },
+        {
+          "gate": "spread_and_freshness",
+          "passed": true,
+          "detail": "spread 2 bps <= 5 bps, age 100 ms < 500 ms"
+        },
+        {
+          "gate": "btc_regime",
+          "passed": true,
+          "detail": "BTC 4h regime & crash guard OK"
+        },
+        {
+          "gate": "position_and_cooldown",
+          "passed": true,
+          "detail": "no open position and cooldown clear"
+        },
+        {
+          "gate": "macro_blackout",
+          "passed": true,
+          "detail": "no macro event blackout"
+        },
+        {
+          "gate": "vol_targeting",
+          "passed": true,
+          "detail": "size_mult=1"
+        }
+      ]
+    }
+  ],
+  [
+    676,
+    {
+      "venue": "spot",
+      "symbol": "ETHUSDT",
+      "direction": "Long",
+      "entry_ref": "264.71863809",
+      "stop": "261.08868957",
+      "tp1": "270.163560870",
+      "tp2": "275.608483650",
+      "atr": "2.26871782",
+      "size_mult": "1",
+      "strategy": "TrendPullback",
+      "rationale": "S1 Trend-Pullback Long: 4h bullish, 1h EMA21>EMA55, RSI 61.7 rising, ADX 45.5",
+      "gate_logs": [
+        {
+          "gate": "htf_regime",
+          "passed": true,
+          "detail": "4h close 264.1903 > EMA50 239.0009 (rising 3 bars)"
+        },
+        {
+          "gate": "trend_1h",
+          "passed": true,
+          "detail": "EMA21 263.5133 > EMA55 260.0873 & close > EMA200 238.9239"
+        },
+        {
+          "gate": "pullback",
+          "passed": true,
+          "detail": "min_low_3=263.2668, close=264.7186 reclaimed EMA21"
+        },
+        {
+          "gate": "momentum",
+          "passed": true,
+          "detail": "RSI 61.65 > 58.85, ADX 45.51, +DI > -DI"
+        },
+        {
+          "gate": "volume",
+          "passed": true,
+          "detail": "vol 1000.00 >= 0.8x SMA20 (1000.00)"
+        },
+        {
+          "gate": "anti_overextension",
+          "passed": true,
+          "detail": "|close - EMA21| <= 1.5*ATR"
+        },
+        {
+          "gate": "closed_bar_and_gaps",
+          "passed": true,
+          "detail": "closed bar with 300-bar continuity"
+        },
+        {
+          "gate": "cost_gate",
+          "passed": true,
+          "detail": "reward 205.68 bps >= 3.0x round-trip (78.00 bps)"
+        },
+        {
+          "gate": "spread_and_freshness",
+          "passed": true,
+          "detail": "spread 2 bps <= 5 bps, age 100 ms < 500 ms"
+        },
+        {
+          "gate": "btc_regime",
+          "passed": true,
+          "detail": "BTC 4h regime & crash guard OK"
+        },
+        {
+          "gate": "position_and_cooldown",
+          "passed": true,
+          "detail": "no open position and cooldown clear"
+        },
+        {
+          "gate": "macro_blackout",
+          "passed": true,
+          "detail": "no macro event blackout"
+        },
+        {
+          "gate": "vol_targeting",
+          "passed": true,
+          "detail": "size_mult=1"
+        }
+      ]
+    }
+  ],
+  [
+    678,
+    {
+      "venue": "spot",
+      "symbol": "ETHUSDT",
+      "direction": "Long",
+      "entry_ref": "264.85020325",
+      "stop": "261.26788398",
+      "tp1": "270.223682155",
+      "tp2": "275.597161060",
+      "atr": "2.23894954",
+      "size_mult": "1",
+      "strategy": "TrendPullback",
+      "rationale": "S1 Trend-Pullback Long: 4h bullish, 1h EMA21>EMA55, RSI 61.3 rising, ADX 46.5",
+      "gate_logs": [
+        {
+          "gate": "htf_regime",
+          "passed": true,
+          "detail": "4h close 264.1903 > EMA50 239.0009 (rising 3 bars)"
+        },
+        {
+          "gate": "trend_1h",
+          "passed": true,
+          "detail": "EMA21 263.7016 > EMA55 260.4032 & close > EMA200 239.4321"
+        },
+        {
+          "gate": "pullback",
+          "passed": true,
+          "detail": "min_low_3=263.3977, close=264.8502 reclaimed EMA21"
+        },
+        {
+          "gate": "momentum",
+          "passed": true,
+          "detail": "RSI 61.33 > 58.43, ADX 46.52, +DI > -DI"
+        },
+        {
+          "gate": "volume",
+          "passed": true,
+          "detail": "vol 1000.00 >= 0.8x SMA20 (1000.00)"
+        },
+        {
+          "gate": "anti_overextension",
+          "passed": true,
+          "detail": "|close - EMA21| <= 1.5*ATR"
+        },
+        {
+          "gate": "closed_bar_and_gaps",
+          "passed": true,
+          "detail": "closed bar with 300-bar continuity"
+        },
+        {
+          "gate": "cost_gate",
+          "passed": true,
+          "detail": "reward 202.88 bps >= 3.0x round-trip (78.00 bps)"
+        },
+        {
+          "gate": "spread_and_freshness",
+          "passed": true,
+          "detail": "spread 2 bps <= 5 bps, age 100 ms < 500 ms"
+        },
+        {
+          "gate": "btc_regime",
+          "passed": true,
+          "detail": "BTC 4h regime & crash guard OK"
+        },
+        {
+          "gate": "position_and_cooldown",
+          "passed": true,
+          "detail": "no open position and cooldown clear"
+        },
+        {
+          "gate": "macro_blackout",
+          "passed": true,
+          "detail": "no macro event blackout"
+        },
+        {
+          "gate": "vol_targeting",
+          "passed": true,
+          "detail": "size_mult=1"
+        }
+      ]
+    }
+  ],
+  [
+    680,
+    {
+      "venue": "spot",
+      "symbol": "ETHUSDT",
+      "direction": "Long",
+      "entry_ref": "264.98183380",
+      "stop": "261.44035775",
+      "tp1": "270.294047875",
+      "tp2": "275.606261950",
+      "atr": "2.21342253",
+      "size_mult": "1",
+      "strategy": "TrendPullback",
+      "rationale": "S1 Trend-Pullback Long: 4h bullish, 1h EMA21>EMA55, RSI 61.0 rising, ADX 47.7",
+      "gate_logs": [
+        {
+          "gate": "htf_regime",
+          "passed": true,
+          "detail": "4h close 264.4529 > EMA50 239.9990 (rising 3 bars)"
+        },
+        {
+          "gate": "trend_1h",
+          "passed": true,
+          "detail": "EMA21 263.8801 > EMA55 260.7062 & close > EMA200 239.9328"
+        },
+        {
+          "gate": "pullback",
+          "passed": true,
+          "detail": "min_low_3=263.5286, close=264.9818 reclaimed EMA21"
+        },
+        {
+          "gate": "momentum",
+          "passed": true,
+          "detail": "RSI 61.04 > 58.05, ADX 47.73, +DI > -DI"
+        },
+        {
+          "gate": "volume",
+          "passed": true,
+          "detail": "vol 1000.00 >= 0.8x SMA20 (1000.00)"
+        },
+        {
+          "gate": "anti_overextension",
+          "passed": true,
+          "detail": "|close - EMA21| <= 1.5*ATR"
+        },
+        {
+          "gate": "closed_bar_and_gaps",
+          "passed": true,
+          "detail": "closed bar with 300-bar continuity"
+        },
+        {
+          "gate": "cost_gate",
+          "passed": true,
+          "detail": "reward 200.47 bps >= 3.0x round-trip (78.00 bps)"
+        },
+        {
+          "gate": "spread_and_freshness",
+          "passed": true,
+          "detail": "spread 2 bps <= 5 bps, age 100 ms < 500 ms"
+        },
+        {
+          "gate": "btc_regime",
+          "passed": true,
+          "detail": "BTC 4h regime & crash guard OK"
+        },
+        {
+          "gate": "position_and_cooldown",
+          "passed": true,
+          "detail": "no open position and cooldown clear"
+        },
+        {
+          "gate": "macro_blackout",
+          "passed": true,
+          "detail": "no macro event blackout"
+        },
+        {
+          "gate": "vol_targeting",
+          "passed": true,
+          "detail": "size_mult=1"
+        }
+      ]
+    }
+  ],
+  [
+    682,
+    {
+      "venue": "spot",
+      "symbol": "ETHUSDT",
+      "direction": "Long",
+      "entry_ref": "265.11352977",
+      "stop": "261.60704562",
+      "tp1": "270.373255995",
+      "tp2": "275.632982220",
+      "atr": "2.19155259",
+      "size_mult": "1",
+      "strategy": "TrendPullback",
+      "rationale": "S1 Trend-Pullback Long: 4h bullish, 1h EMA21>EMA55, RSI 60.8 rising, ADX 49.1",
+      "gate_logs": [
+        {
+          "gate": "htf_regime",
+          "passed": true,
+          "detail": "4h close 264.4529 > EMA50 239.9990 (rising 3 bars)"
+        },
+        {
+          "gate": "trend_1h",
+          "passed": true,
+          "detail": "EMA21 264.0504 > EMA55 260.9972 & close > EMA200 240.4262"
+        },
+        {
+          "gate": "pullback",
+          "passed": true,
+          "detail": "min_low_3=263.6596, close=265.1135 reclaimed EMA21"
+        },
+        {
+          "gate": "momentum",
+          "passed": true,
+          "detail": "RSI 60.77 > 57.71, ADX 49.11, +DI > -DI"
+        },
+        {
+          "gate": "volume",
+          "passed": true,
+          "detail": "vol 1000.00 >= 0.8x SMA20 (1000.00)"
+        },
+        {
+          "gate": "anti_overextension",
+          "passed": true,
+          "detail": "|close - EMA21| <= 1.5*ATR"
+        },
+        {
+          "gate": "closed_bar_and_gaps",
+          "passed": true,
+          "detail": "closed bar with 300-bar continuity"
+        },
+        {
+          "gate": "cost_gate",
+          "passed": true,
+          "detail": "reward 198.39 bps >= 3.0x round-trip (78.00 bps)"
+        },
+        {
+          "gate": "spread_and_freshness",
+          "passed": true,
+          "detail": "spread 2 bps <= 5 bps, age 100 ms < 500 ms"
+        },
+        {
+          "gate": "btc_regime",
+          "passed": true,
+          "detail": "BTC 4h regime & crash guard OK"
+        },
+        {
+          "gate": "position_and_cooldown",
+          "passed": true,
+          "detail": "no open position and cooldown clear"
+        },
+        {
+          "gate": "macro_blackout",
+          "passed": true,
+          "detail": "no macro event blackout"
+        },
+        {
+          "gate": "vol_targeting",
+          "passed": true,
+          "detail": "size_mult=1"
+        }
+      ]
+    }
+  ],
+  [
+    684,
+    {
+      "venue": "spot",
+      "symbol": "ETHUSDT",
+      "direction": "Long",
+      "entry_ref": "265.24529120",
+      "stop": "261.76875356",
+      "tp1": "270.460097660",
+      "tp2": "275.674904120",
+      "atr": "2.17283602",
+      "size_mult": "1",
+      "strategy": "TrendPullback",
+      "rationale": "S1 Trend-Pullback Long: 4h bullish, 1h EMA21>EMA55, RSI 60.5 rising, ADX 50.7",
+      "gate_logs": [
+        {
+          "gate": "htf_regime",
+          "passed": true,
+          "detail": "4h close 264.7159 > EMA50 240.9683 (rising 3 bars)"
+        },
+        {
+          "gate": "trend_1h",
+          "passed": true,
+          "detail": "EMA21 264.2141 > EMA55 261.2770 & close > EMA200 240.9125"
+        },
+        {
+          "gate": "pullback",
+          "passed": true,
+          "detail": "min_low_3=263.7906, close=265.2453 reclaimed EMA21"
+        },
+        {
+          "gate": "momentum",
+          "passed": true,
+          "detail": "RSI 60.54 > 57.41, ADX 50.66, +DI > -DI"
+        },
+        {
+          "gate": "volume",
+          "passed": true,
+          "detail": "vol 1000.00 >= 0.8x SMA20 (1000.00)"
+        },
+        {
+          "gate": "anti_overextension",
+          "passed": true,
+          "detail": "|close - EMA21| <= 1.5*ATR"
+        },
+        {
+          "gate": "closed_bar_and_gaps",
+          "passed": true,
+          "detail": "closed bar with 300-bar continuity"
+        },
+        {
+          "gate": "cost_gate",
+          "passed": true,
+          "detail": "reward 196.60 bps >= 3.0x round-trip (78.00 bps)"
+        },
+        {
+          "gate": "spread_and_freshness",
+          "passed": true,
+          "detail": "spread 2 bps <= 5 bps, age 100 ms < 500 ms"
+        },
+        {
+          "gate": "btc_regime",
+          "passed": true,
+          "detail": "BTC 4h regime & crash guard OK"
+        },
+        {
+          "gate": "position_and_cooldown",
+          "passed": true,
+          "detail": "no open position and cooldown clear"
+        },
+        {
+          "gate": "macro_blackout",
+          "passed": true,
+          "detail": "no macro event blackout"
+        },
+        {
+          "gate": "vol_targeting",
+          "passed": true,
+          "detail": "size_mult=1"
+        }
+      ]
+    }
+  ]
+]

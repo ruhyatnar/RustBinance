@@ -722,6 +722,55 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Insert a shadow strategy signal record into `signals_shadow` (§6.4, M08).
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] on SQLite failure.
+    pub fn insert_shadow_signal(
+        &mut self,
+        ts_ms: i64,
+        strategy: &str,
+        symbol: &Symbol,
+        payload_json: &str,
+        outcome: &str,
+    ) -> Result<i64, StoreError> {
+        self.conn.execute(
+            "INSERT INTO signals_shadow (ts_ms, strategy, symbol, payload, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![ts_ms, strategy, symbol.as_str(), payload_json, outcome],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// List shadow signal rows `(id, ts_ms, strategy, symbol, payload, outcome)` ordered by `id`.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] on SQLite failure.
+    #[allow(clippy::type_complexity)]
+    pub fn list_shadow_signals(
+        &self,
+    ) -> Result<Vec<(i64, i64, String, String, String, String)>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts_ms, strategy, symbol, payload, outcome
+             FROM signals_shadow ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Expose raw connection transaction helper exclusively for crash/fault tests.
     #[doc(hidden)]
     pub fn execute_raw_batch(&self, sql: &str) -> Result<(), StoreError> {
