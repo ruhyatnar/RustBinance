@@ -85,3 +85,22 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Diverifikasi: 2026-11-22 oleh agen
 - Dampak ke spec: catatan klarifikasi pada §4.2 butir 4 — balasan `Pong` atas `Ping` server harus menyalin payload `Ping` (bukan payload kosong; payload kosong hanya untuk unsolicited pong). Diimplementasikan sesuai dokumen resmi Binance.
 
+## Spot Market Streams: Batas Koneksi, Format Stream, dan Sinkronisasi Order Book Lokal   (milestone: M03)
+- Fakta:
+  - **Batas koneksi Market Streams**: maksimal **1024 stream** per koneksi, maksimal **5 pesan masuk/detik** (Ping, Pong, pesan kontrol SUBSCRIBE/UNSUBSCRIBE), maksimal **300 percobaan koneksi per 5 menit per IP**, masa berlaku koneksi **24 jam**, event `serverShutdown` dikirim sebelum putus, server kirim `Ping` tiap **20 detik** dan wajib dibalas `Pong` dengan salinan payload `Ping` dalam **1 menit**.
+  - **Combined stream**: endpoint `/stream?streams=<s1>/<s2>/...` membungkus setiap payload dalam `{"stream":"<name>","data":<payload>}`.
+  - **Format event terverifikasi (`SPOT_WSS.yaml`)**:
+    - `{symbol}@kline_{interval}`: `{"e":"kline","E":...,"s":...,"k":{"t":openMs,"T":closeMs,"i":interval,"o","h","l","c","v","q","n":trades,"V":takerBuyBase,"x":isClosed}}`.
+    - `{symbol}@bookTicker`: `{"u":updateId,"s":symbol,"b":bestBid,"B":bestBidQty,"a":bestAsk,"A":bestAskQty}`.
+    - `{symbol}@depth@100ms`: `{"e":"depthUpdate","E":...,"s":...,"U":firstUpdateId,"u":finalUpdateId,"b":[[price,qty]],"a":[[price,qty]]}`.
+    - `!miniTicker@arr`: array JSON dari objek `24hrMiniTicker` (`e`, `E`, `s`, `c`, `o`, `h`, `l`, `v`, `q`) — pengganti `!ticker@arr`.
+  - **Prosedur resmi sinkronisasi order book lokal (Spot)**:
+    1. Buka stream `@depth` dan **buffer** event; catat `U` event pertama.
+    2. Ambil snapshot `GET /api/v3/depth?symbol=...&limit=1000` (maks 5000). Bila `snapshot.lastUpdateId < U_pertama`, ambil ulang snapshot.
+    3. Buang event buffer dengan `u <= snapshot.lastUpdateId`.
+    4. Terapkan snapshot (`book.last_update_id = snapshot.lastUpdateId`), lalu replay buffer dan event lanjutan: bila `u <= book_id` → abaikan; bila `U > book_id + 1` → **gap terdeteksi**, tandai book `Invalid` dan lakukan resync dari snapshot; selain itu terapkan level `b`/`a` (qty `0` = hapus level) dan set `book_id = u`.
+- Sumber: `binance-docs/SPOT_WSS.yaml`, `binance-docs/SPOT_REST.yaml`, `https://developers.binance.com/en/docs/products/spot/web-socket-streams`
+- Diverifikasi: 2026-11-22 oleh agen
+- Dampak ke spec: tidak ada (sesuai §4.3 dan §6.2; eksklusi simbol monitoring/seed memakai `exclude_symbols` di `bot.toml` sebagaimana sudah dicatat pada entri M03 sebelumnya).
+
+

@@ -211,6 +211,22 @@ version = "0.1.0"
 [[package]]
 name = "bot-marketdata"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bot-config",
+ "bot-types",
+ "futures-util",
+ "proptest",
+ "rand 0.10.4",
+ "reqwest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
 
 [[package]]
 name = "bot-risk"

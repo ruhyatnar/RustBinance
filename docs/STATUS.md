@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M02 (selesai — menunggu persetujuan pemilik untuk lanjut ke M03)
+**Milestone aktif:** M03 (selesai — menunggu persetujuan pemilik untuk lanjut ke M04)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-22
 
@@ -8,7 +8,7 @@
 - [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
 - [x] **M01** — bot-types & bot-config  → `docs/milestones/M01-*.md`
 - [x] **M02** — bot-exchange Spot: REST + WS API session  → `docs/milestones/M02-*.md`
-- [ ] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
+- [x] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
 - [ ] **M04** — bot-indicators  → `docs/milestones/M04-*.md`
 - [ ] **M05** — bot-store: SQLite journal/snapshot/recovery  → `docs/milestones/M05-*.md`
 - [ ] **M06** — bot-risk: gatekeeper, sizing, breakers  → `docs/milestones/M06-*.md`
@@ -28,11 +28,12 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-22 (M02):** Implementasikan `bot-exchange` Spot (§4.1–§4.2, §4.4, §3.5, Lampiran A):
-  - Trait venue-agnostik `ExchangeGateway` & `VenueAdapter`, DTO/event bertag `venue: Venue`, klasifikasi error Binance (`GatewayError`, `ExchangeErrorKind`, `UnknownNeedsQuery` untuk timeout/5xx, `429`/`418` `retryAfter`).
-  - Autentikasi Ed25519 PKCS#8 PEM (`ed25519-dalek` + `Secret<[u8; 32]>`) dengan canonical signing `session.logon` dan zeroization otomatis; ADR-0003 mencatat pilihan klien WS/REST kustom (`tokio-tungstenite` + `reqwest` rustls).
-  - REST `SpotRestClient` (`GET /api/v3/time` offset jam & `GET /api/v3/exchangeInfo` → `InstrumentRules` + `rateLimits`).
-  - Sesi WS API persisten `SpotWsSession`: state machine (`Disconnected → Connecting → LoggingOn → Subscribing → Ready → Draining`), peta korelasi UUID v7 `id → oneshot`, timeout 10 s, balasan `Pong` dengan salinan payload `Ping`, watchdog stale, `userDataStream.subscribe`, parser event (`executionReport`, `outboundAccountPosition`, `balanceUpdate`, `listStatus`, `eventStreamTerminated`, `serverShutdown`), rotasi ±23 jam make-before-break + dedup `(orderId, tradeId)`, reconnect backoff eksponensial 250 ms → 30 s full jitter + penghormatan `retryAfter`, dan `SpotAdapter::deactivate()` yang tidak membatalkan proteksi.
-  - Verifikasi spec WS API Spot dicatat di `docs/verified-facts.md`.
-- **Tes lulus:** `./scripts/verify.sh` hijau (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` — termasuk 12 unit test + 6 mock WS/REST integration test `bot-exchange` mencakup korelasi paralel 32 request, rotasi `serverShutdown` make-before-break + dedup fill, reconnect + resubscribe, 429/418 `retryAfter`, `UnknownNeedsQuery` → `query_order`, dan uji log capture nol rahasia; secret scan ok); kompilasi & clippy `--features testnet-it` juga hijau.
-- **Belum teruji:** Tes integrasi live terhadap Binance Spot Testnet (`cargo test -p bot-exchange --features testnet-it`) membutuhkan env var kredensial testnet milik pengguna; `cargo-deny` belum terpasang di VM ini (`deny.toml` sudah diperbarui untuk lisensi permisif `ISC`/`BSD-3-Clause`/`CDLA-Permissive-2.0` dari stack `rustls`/`aws-lc-rs`/`webpki-roots`).
+- **2026-11-22 (M03):** Implementasikan `bot-marketdata` (§3.3, §4.3, §6.2):
+  - Klien Market Streams (`StreamPlan` membatasi ≤1024 stream/koneksi, combined URL `/stream?streams=...`, parser `kline`, `bookTicker`, `depthUpdate`, `!miniTicker@arr`, `serverShutdown`; `spawn_market_stream` dengan watchdog basi 1500 ms, balasan `Pong` menyalin payload `Ping`, backoff eksponensial + full jitter).
+  - Kebijakan backpressure §3.3: `closed_klines_rx` via `mpsc` bounded (4096, tidak pernah drop); `bookTicker`, `BookTelemetry`, dan `!miniTicker@arr` via `watch` conflation.
+  - `KlineBuffer` per `(Venue, Symbol, Timeframe)`: hanya `x=true` yang memicu event, deteksi gap + backfill via `KlineBackfillClient` (`SpotMarketRestClient` `GET /api/v3/klines`), dan status `is_ready()` setelah warm-up terpenuhi tanpa gap.
+  - `LocalOrderBook` dengan prosedur sinkronisasi resmi Binance Spot (buffer → snapshot `GET /api/v3/depth` → buang `u <= lastUpdateId` → cek kontinuitas → `BookStatus::Invalid` saat gap + resync), kalkulasi `spread_bps` (`Decimal`) dan `OBI` top-N + EMA (`f64`, selalu `None` saat `Invalid`).
+  - `UniverseFilter` (§6.2: kuotasi USDT, status `TRADING`, volume/spread/usia untuk core & scanner, eksklusi leveraged token, stable-vs-stable, dan `exclude_symbols`) + trait `UniverseProvider` & `spawn_universe_refresher` (15 menit).
+  - Verifikasi prosedur order book Spot & batas Market Streams dicatat di `docs/verified-facts.md`; indeks `codegraph` dan `graphify` disinkronkan.
+- **Tes lulus:** `./scripts/verify.sh` hijau (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` — termasuk 6 unit test + 4 mock integration test `bot-marketdata`: fixture gap → `Invalid` → resync konsisten, kline non-closed tidak memicu sinyal + backfill gap, tes beban 20 simbol × 3 TF = 300 closed klines tanpa drop, watchdog 1500 ms reconnect + ping/pong; secret scan ok); kompilasi & clippy `--features testnet-it` juga hijau.
+- **Belum teruji:** Tes kontrak live Spot Testnet (`cargo test -p bot-marketdata --features testnet-it`) belum dijalankan; `cargo-deny` belum terpasang di VM ini; perubahan M03 baru di-commit lokal dan belum di-`git push`.
