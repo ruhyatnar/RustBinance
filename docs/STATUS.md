@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M09 (selesai — menunggu persetujuan pemilik untuk lanjut ke M10)
+**Milestone aktif:** M10 (selesai — menunggu persetujuan pemilik untuk lanjut ke M11)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-23
 
@@ -15,7 +15,7 @@
 - [x] **M07** — bot-exec + bot-engine + paper broker  → `docs/milestones/M07-*.md`
 - [x] **M08** — bot-strategy: S1, S2, shadow S3/S4 (Long)  → `docs/milestones/M08-*.md`
 - [x] **M09** — bot-backtest: replay & walk-forward  → `docs/milestones/M09-*.md`
-- [ ] **M10** — bot-ipc + botctl  → `docs/milestones/M10-*.md`
+- [x] **M10** — bot-ipc + botctl  → `docs/milestones/M10-*.md`
 - [ ] **M11** — web-ui  → `docs/milestones/M11-*.md`
 - [ ] **M12** — desktop-ui (Qt6/Plasma 6)  → `docs/milestones/M12-*.md`
 - [ ] **M13** — Packaging, installer, systemd, chaos suite  → `docs/milestones/M13-*.md`
@@ -28,10 +28,9 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-23 (M09):** Implementasikan `bot-backtest` (§13.2–§13.3, §6.1) memakai kode `EngineActor`, `PaperBroker`, `Gatekeeper`, dan `Strategy` produksi yang sama (tanpa fork), serta catat verifikasi sumber & skema 12 kolom CSV `data.binance.vision` / `/api/v3/klines` di `docs/verified-facts.md`:
-  - `data`: URL builder arsip resmi `data.binance.vision` (`build_data_vision_kline_url` & `.CHECKSUM` untuk Spot & USDⓈ-M Futures, bulanan & harian), parser/writer CSV 12 kolom (`parse_binance_kline_csv` / `write_binance_kline_csv` dengan deteksi header opsional & normalisasi otomatis timestamp milidetik pra-2025 vs mikrodetik 2025+), serta validator kontinuitas `validate_kline_series_gaps`.
-  - `PaperBroker` & `runner`: dukungan mode replay §13.2 (`allow_same_bar_entry_fill = false` untuk eksekusi bar berikutnya, `strict_limit_maker_penetration = true` agar `LIMIT_MAKER` hanya terisi bila harga benar-benar menembus level, `CostModelConfig` default `1 tick + 0.5×spread` dan uji stres `2×`), serta `BacktestRunner` (`run`, `run_with_trace`, `run_with_trace_and_trials`).
-  - `walk_forward`: `WalkForwardConfig` (`default_12m_3m_3m`: train 12 bln / test 3 bln / geser 3 bln), `WalkForwardRunner::run_s1` yang menyimpan hasil per jendela dan menghitung total percobaan parameter (`total_parameter_trials`) untuk koreksi *multiple testing*.
-  - `metrics`: `BacktestReport` & `BacktestMetrics` lengkap (`net_pnl_usd`, `profit_factor`, `profit_factor_without_top3` tanpa 3 trade terbaik, `expectancy_r`, `max_drawdown_pct`, `sharpe_ratio`, `sortino_ratio`, `deflated_sharpe`, `turnover_multiple`, `exposure_pct`, `r_distribution` min/p25/median/p75/max, dan `evaluate_parameter_sensitivity` ±20%).
-  - **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 98/98 — termasuk uji reproducibility identik, uji anti look-ahead perturbasi bar masa depan pada seluruh pipeline replay, uji `LIMIT_MAKER` strict penetration & next-bar fill, laporan contoh S1/S2, dan walk-forward; `cargo deny check` ok; secret scan ok).
-  - **Belum teruji:** Evaluasi gerbang operasional penuh 3 tahun data nyata G1–G5 (cakupan M14), IPC & CLI `botctl` (M10); commit M09 belum di-`git push`.
+- **2026-11-23 (M10):** Implementasikan `bot-ipc`, `protocol/ipc-v1.schema.json` + fixture UI, audit `JournalEvent::Command`, serta CLI `binance-botctl` (§10, §7.4, §12.3, §12.5):
+  - `protocol/ipc-v1.schema.json` & `protocol/fixtures/v1/*.json`: skema JSON Draft 2020-12 sebagai sumber kebenaran tunggal untuk Rust, TypeScript (Web UI), dan QML (Desktop UI), mencakup `hello`, `snapshot`, `delta`, `market`, `event`, `heartbeat`, `command_result`, `command`, `auth`, `request_snapshot`, dan respons error HTTP seragam (`{ "error": { "code", "message" } }`); semua desimal bertipe string dan seluruh posisi/order/market membawa `venue`.
+  - `bot-ipc`: server UDS (`SO_PEERCRED` via `PeerAuthPolicy`, izin `0660`, NDJSON) dan Axum HTTP/WS loopback (`127.0.0.1`) dengan auth wajib di semua endpoint (`TokenAuth` full vs read-only via `Secret<String>` & perbandingan constant-time `subtle`), penolakan eksplisit token di query string (`?token=`/`?access_token=`), cek `Origin` ketat (CORS default tutup), header `Content-Security-Policy`, `RateLimiter` per-caller, `ConfirmNonceStore` 10 detik sekali pakai untuk `panic_flatten`/`reset_kill`, `CommandDispatcher` idempoten (`cmd_id`) dengan `set_param` tighten-only (`bot_config::is_tightening`), stub `switch_venue` → `not_supported` sampai M16, audit penuh ke SQLite `journal` (`kind = "Command"`), serta `conflate` (5–10 Hz) + `TelemetryHub` non-blocking yang memutus klien lambat tanpa memblok engine.
+  - `botctl` (`binance-botctl`): subperintah `keygen` (Ed25519 PKCS#8 `0600` & SPKI `0644` sejak dibuat via `OpenOptions::create_new`, zeroize memori kunci, menolak menimpa kunci lama), `config validate`, `status [--json]`, `pause`, `resume`, `panic-flatten --confirm`, dan `reset-kill --confirm`.
+  - **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` **108/108** lulus — termasuk 2 tes kontrak skema & fixture UI, 5 tes keamanan/auth/Origin/query-token/rate-limit/nonce/audit/UDS `0660`+`SO_PEERCRED`/conflation/klien lambat, serta 3 tes integrasi `botctl`; `cargo deny check` ok; secret scan ok).
+  - **Belum teruji:** Wiring daemon penuh `binance-botd` dengan engine + IPC (M13), Web UI (M11), Desktop UI (M12), dan logika `switch_venue` sungguhan (M16); commit M10 belum di-`git push`.

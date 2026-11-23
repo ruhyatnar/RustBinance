@@ -1,0 +1,28 @@
+{
+  "v": 1,
+  "type": "delta",
+  "seq": 3,
+  "ts_ms": 1790000000200,
+  "payload": {
+    "venues": null,
+    "engine": null,
+    "risk": {
+      "equity": "1015.00",
+      "day_pnl_pct": "1.08",
+      "week_pnl_pct": "2.1",
+      "drawdown_pct": "-0.8",
+      "heat_pct": "0.9",
+      "heat_max_pct": "2.0",
+      "open_positions": 1,
+      "max_positions": 4,
+      "btc_guard": "SECURE",
+      "limits": {
+        "daily_halt_pct": "-2.0",
+        "kill_pct": "-10.0"
+      }
+    },
+    "positions": null,
+    "orders": null,
+    "alerts": null
+  }
+}

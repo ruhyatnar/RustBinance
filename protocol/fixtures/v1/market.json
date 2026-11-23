@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "type": "market",
+  "seq": 4,
+  "ts_ms": 1790000000400,
+  "payload": {
+    "ticks": [
+      {
+        "venue": "spot",
+        "symbol": "BTCUSDT",
+        "bid": "68120.50",
+        "ask": "68121.00",
+        "last": "68120.80",
+        "spread_bps": "0.07",
+        "ts_ms": 1790000000395
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "hello",
+  "seq": 1,
+  "ts_ms": 1790000000000,
+  "payload": {
+    "protocol_version": 1,
+    "build_mode": "paper",
+    "capabilities": ["uds", "http", "ws", "conflation"],
+    "engine_instance_id": "0192f0a8-1234-7000-8000-000000000001"
+  }
+}

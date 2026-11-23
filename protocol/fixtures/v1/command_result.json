@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "command_result",
+  "seq": 7,
+  "ts_ms": 1790000001100,
+  "payload": {
+    "cmd_id": "0192f0a8-1234-7000-8000-000000000777",
+    "ok": true,
+    "code": "ok",
+    "message": "Engine paused",
+    "confirm_nonce": null,
+    "expires_at_ms": null
+  }
+}

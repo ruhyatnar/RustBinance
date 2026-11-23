@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "event",
+  "seq": 5,
+  "ts_ms": 1790000000500,
+  "payload": {
+    "venue": "spot",
+    "symbol": "ETHUSDT",
+    "kind": "StopMoved",
+    "level": "info",
+    "message": "Moved stop to breakeven 3120.40"
+  }
+}

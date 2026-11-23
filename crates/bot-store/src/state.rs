@@ -174,6 +174,9 @@ impl PersistedEngineState {
             JournalEvent::RiskStateSet { key, value } => {
                 self.risk_state.insert(key.clone(), value.clone());
             }
+            JournalEvent::Command { .. } => {
+                // Audit-only record; trading state mutations are emitted as dedicated events.
+            }
         }
         self.last_seq = seq;
     }

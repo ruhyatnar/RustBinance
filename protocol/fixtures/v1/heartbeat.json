@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "heartbeat",
+  "seq": 6,
+  "ts_ms": 1790000001000,
+  "payload": {
+    "engine_state": "Ready",
+    "ws_latency_ms": 12,
+    "weight_used": 144,
+    "weight_limit": 6000
+  }
+}

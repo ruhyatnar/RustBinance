@@ -1,4 +1,15 @@
 #![forbid(unsafe_code)]
-//! CLI control utility for binance-botd.
+//! `binance-botctl` command-line interface binary.
 
-fn main() {}
+use anyhow::Result;
+use botctl::cli::Cli;
+use botctl::run_cli;
+use clap::Parser;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let output = run_cli(cli).await?;
+    println!("{output}");
+    Ok(())
+}

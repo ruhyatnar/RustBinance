@@ -206,6 +206,25 @@ pub enum JournalEvent {
         /// Risk state value (Decimal serialized as string or scalar text).
         value: String,
     },
+    /// Audited IPC control command execution (`journal.kind = "Command"`, §10.1).
+    Command {
+        /// Idempotency UUID of the command.
+        cmd_id: Uuid,
+        /// Authenticated caller principal (e.g. `uds:uid=1000` or `http:full`).
+        principal: String,
+        /// Machine-readable command name (e.g. `pause`, `panic_flatten`).
+        command: String,
+        /// Optional target venue if the command is venue-scoped.
+        venue: Option<Venue>,
+        /// Whether the command succeeded.
+        ok: bool,
+        /// Machine-readable outcome code (e.g. `ok`, `not_supported`, `forbidden`).
+        code: String,
+        /// Human-readable outcome summary (never contains secrets).
+        message: String,
+        /// Execution timestamp (UTC ms).
+        ts_ms: i64,
+    },
 }
 
 impl JournalEvent {
@@ -224,6 +243,7 @@ impl JournalEvent {
             Self::EngineModeChanged { .. } => "EngineModeChanged",
             Self::VenueStateChanged { .. } => "VenueStateChanged",
             Self::RiskStateSet { .. } => "RiskStateSet",
+            Self::Command { .. } => "Command",
         }
     }
 
@@ -240,6 +260,7 @@ impl JournalEvent {
             Self::FillRecorded { fill } => Some(fill.venue),
             Self::PositionOpened { position } => Some(position.venue),
             Self::VenueStateChanged { record } => Some(record.venue),
+            Self::Command { venue, .. } => *venue,
             Self::EngineModeChanged { .. } | Self::RiskStateSet { .. } => None,
         }
     }
@@ -258,7 +279,8 @@ impl JournalEvent {
             | Self::FillRecorded { .. }
             | Self::EngineModeChanged { .. }
             | Self::VenueStateChanged { .. }
-            | Self::RiskStateSet { .. } => None,
+            | Self::RiskStateSet { .. }
+            | Self::Command { .. } => None,
         }
     }
 
@@ -276,7 +298,8 @@ impl JournalEvent {
             | Self::PositionStateChanged { .. }
             | Self::EngineModeChanged { .. }
             | Self::VenueStateChanged { .. }
-            | Self::RiskStateSet { .. } => None,
+            | Self::RiskStateSet { .. }
+            | Self::Command { .. } => None,
         }
     }
 }

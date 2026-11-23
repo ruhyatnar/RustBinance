@@ -1,0 +1,73 @@
+{
+  "v": 1,
+  "type": "snapshot",
+  "seq": 2,
+  "ts_ms": 1790000000100,
+  "payload": {
+    "venues": {
+      "active": "spot",
+      "spot": "Active",
+      "futures": "Disabled",
+      "last_switch_ms": 0,
+      "switches_today": 0
+    },
+    "engine": {
+      "mode": "Ready",
+      "build_mode": "paper",
+      "uptime_s": 86400,
+      "ws_latency_ms": 14,
+      "clock_drift_ms": 3,
+      "rate": {
+        "weight_used": 142,
+        "weight_limit": 6000,
+        "orders_10s": 2
+      }
+    },
+    "risk": {
+      "equity": "1012.40",
+      "day_pnl_pct": "0.82",
+      "week_pnl_pct": "1.9",
+      "drawdown_pct": "-1.1",
+      "heat_pct": "0.9",
+      "heat_max_pct": "2.0",
+      "open_positions": 1,
+      "max_positions": 4,
+      "btc_guard": "SECURE",
+      "limits": {
+        "daily_halt_pct": "-2.0",
+        "kill_pct": "-10.0"
+      }
+    },
+    "positions": [
+      {
+        "id": "0192f0a8-1234-7000-8000-000000000099",
+        "venue": "spot",
+        "symbol": "ETHUSDT",
+        "strategy": "TrendPullback",
+        "state": "OpenProtected",
+        "entry": "3120.40",
+        "mark": "3188.10",
+        "qty": "0.320",
+        "stop": "3098.00",
+        "tp1": "3200.00",
+        "tp2": "3280.00",
+        "profit_r": "1.9",
+        "unrealized_quote": "21.66",
+        "age_s": 15420,
+        "tp1_done": false,
+        "be_done": true
+      }
+    ],
+    "orders": [],
+    "signals_shadow": [],
+    "alerts": [
+      {
+        "id": "a1",
+        "venue": "spot",
+        "level": "warn",
+        "msg": "Spread BTCUSDT 6.1 bps > gate",
+        "acked": false
+      }
+    ]
+  }
+}

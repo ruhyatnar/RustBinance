@@ -1,0 +1,579 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binance-bot.local/protocol/ipc-v1.schema.json",
+  "title": "Binance Rust Trading Bot IPC Protocol v1",
+  "description": "Single source of truth for Rust (bot-ipc/botctl), SvelteKit Web UI (TypeScript), and Qt6/QML Desktop UI (§10.2-§10.3).",
+  "oneOf": [
+    { "$ref": "#/$defs/HelloEnvelope" },
+    { "$ref": "#/$defs/SnapshotEnvelope" },
+    { "$ref": "#/$defs/DeltaEnvelope" },
+    { "$ref": "#/$defs/MarketEnvelope" },
+    { "$ref": "#/$defs/EventEnvelope" },
+    { "$ref": "#/$defs/HeartbeatEnvelope" },
+    { "$ref": "#/$defs/CommandResultEnvelope" },
+    { "$ref": "#/$defs/CommandEnvelope" },
+    { "$ref": "#/$defs/AuthEnvelope" },
+    { "$ref": "#/$defs/RequestSnapshotEnvelope" }
+  ],
+  "$defs": {
+    "ProtocolVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "DecimalString": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "UuidString": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "Venue": {
+      "type": "string",
+      "enum": ["spot", "futures"]
+    },
+    "VenueState": {
+      "type": "string",
+      "enum": ["Disabled", "Activating", "Active", "Draining"]
+    },
+    "EngineMode": {
+      "type": "string",
+      "enum": ["Starting", "Syncing", "Ready", "Paused", "ReduceOnly", "Halted", "Killed"]
+    },
+    "BuildMode": {
+      "type": "string",
+      "enum": ["paper", "testnet", "live"]
+    },
+    "AlertLevel": {
+      "type": "string",
+      "enum": ["info", "warn", "error", "critical"]
+    },
+    "RateStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["weight_used", "weight_limit", "orders_10s"],
+      "properties": {
+        "weight_used": { "type": "integer", "minimum": 0 },
+        "weight_limit": { "type": "integer", "minimum": 1 },
+        "orders_10s": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "VenuesSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active", "spot", "futures", "last_switch_ms", "switches_today"],
+      "properties": {
+        "active": { "$ref": "#/$defs/Venue" },
+        "spot": { "$ref": "#/$defs/VenueState" },
+        "futures": { "$ref": "#/$defs/VenueState" },
+        "last_switch_ms": { "type": "integer", "minimum": 0 },
+        "switches_today": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "EngineSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "build_mode", "uptime_s", "ws_latency_ms", "clock_drift_ms", "rate"],
+      "properties": {
+        "mode": { "$ref": "#/$defs/EngineMode" },
+        "build_mode": { "$ref": "#/$defs/BuildMode" },
+        "uptime_s": { "type": "integer", "minimum": 0 },
+        "ws_latency_ms": { "type": "integer", "minimum": 0 },
+        "clock_drift_ms": { "type": "integer" },
+        "rate": { "$ref": "#/$defs/RateStatus" }
+      }
+    },
+    "RiskLimitsSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["daily_halt_pct", "kill_pct"],
+      "properties": {
+        "daily_halt_pct": { "$ref": "#/$defs/DecimalString" },
+        "kill_pct": { "$ref": "#/$defs/DecimalString" }
+      }
+    },
+    "RiskSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "equity",
+        "day_pnl_pct",
+        "week_pnl_pct",
+        "drawdown_pct",
+        "heat_pct",
+        "heat_max_pct",
+        "open_positions",
+        "max_positions",
+        "btc_guard",
+        "limits"
+      ],
+      "properties": {
+        "equity": { "$ref": "#/$defs/DecimalString" },
+        "day_pnl_pct": { "$ref": "#/$defs/DecimalString" },
+        "week_pnl_pct": { "$ref": "#/$defs/DecimalString" },
+        "drawdown_pct": { "$ref": "#/$defs/DecimalString" },
+        "heat_pct": { "$ref": "#/$defs/DecimalString" },
+        "heat_max_pct": { "$ref": "#/$defs/DecimalString" },
+        "open_positions": { "type": "integer", "minimum": 0 },
+        "max_positions": { "type": "integer", "minimum": 1 },
+        "btc_guard": { "type": "string", "minLength": 1 },
+        "limits": { "$ref": "#/$defs/RiskLimitsSummary" }
+      }
+    },
+    "PositionView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "venue",
+        "symbol",
+        "strategy",
+        "state",
+        "entry",
+        "mark",
+        "qty",
+        "stop",
+        "tp1",
+        "tp2",
+        "profit_r",
+        "unrealized_quote",
+        "age_s",
+        "tp1_done",
+        "be_done"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/UuidString" },
+        "venue": { "$ref": "#/$defs/Venue" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "strategy": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "minLength": 1 },
+        "entry": { "$ref": "#/$defs/DecimalString" },
+        "mark": { "$ref": "#/$defs/DecimalString" },
+        "qty": { "$ref": "#/$defs/DecimalString" },
+        "stop": { "$ref": "#/$defs/DecimalString" },
+        "tp1": { "$ref": "#/$defs/DecimalString" },
+        "tp2": { "$ref": "#/$defs/DecimalString" },
+        "profit_r": { "$ref": "#/$defs/DecimalString" },
+        "unrealized_quote": { "$ref": "#/$defs/DecimalString" },
+        "age_s": { "type": "integer", "minimum": 0 },
+        "tp1_done": { "type": "boolean" },
+        "be_done": { "type": "boolean" }
+      }
+    },
+    "OrderView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "client_id",
+        "venue",
+        "symbol",
+        "side",
+        "kind",
+        "purpose",
+        "status",
+        "qty",
+        "filled_qty"
+      ],
+      "properties": {
+        "client_id": { "type": "string", "minLength": 1 },
+        "venue": { "$ref": "#/$defs/Venue" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "side": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "purpose": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "price": { "type": ["string", "null"] },
+        "qty": { "$ref": "#/$defs/DecimalString" },
+        "filled_qty": { "$ref": "#/$defs/DecimalString" }
+      }
+    },
+    "ShadowSignalView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["venue", "symbol", "strategy", "direction", "entry", "stop", "ts_ms"],
+      "properties": {
+        "venue": { "$ref": "#/$defs/Venue" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "strategy": { "type": "string", "minLength": 1 },
+        "direction": { "type": "string", "minLength": 1 },
+        "entry": { "$ref": "#/$defs/DecimalString" },
+        "stop": { "$ref": "#/$defs/DecimalString" },
+        "ts_ms": { "type": "integer" }
+      }
+    },
+    "AlertView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "level", "msg"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "venue": { "oneOf": [{ "$ref": "#/$defs/Venue" }, { "type": "null" }] },
+        "level": { "$ref": "#/$defs/AlertLevel" },
+        "msg": { "type": "string" },
+        "acked": { "type": "boolean" }
+      }
+    },
+    "HelloPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "build_mode", "capabilities", "engine_instance_id"],
+      "properties": {
+        "protocol_version": { "$ref": "#/$defs/ProtocolVersion" },
+        "build_mode": { "$ref": "#/$defs/BuildMode" },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "engine_instance_id": { "$ref": "#/$defs/UuidString" }
+      }
+    },
+    "SnapshotPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "venues",
+        "engine",
+        "risk",
+        "positions",
+        "orders",
+        "signals_shadow",
+        "alerts"
+      ],
+      "properties": {
+        "venues": { "$ref": "#/$defs/VenuesSummary" },
+        "engine": { "$ref": "#/$defs/EngineSummary" },
+        "risk": { "$ref": "#/$defs/RiskSummary" },
+        "positions": { "type": "array", "items": { "$ref": "#/$defs/PositionView" } },
+        "orders": { "type": "array", "items": { "$ref": "#/$defs/OrderView" } },
+        "signals_shadow": { "type": "array", "items": { "$ref": "#/$defs/ShadowSignalView" } },
+        "alerts": { "type": "array", "items": { "$ref": "#/$defs/AlertView" } }
+      }
+    },
+    "DeltaPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "venues": { "oneOf": [{ "$ref": "#/$defs/VenuesSummary" }, { "type": "null" }] },
+        "engine": { "oneOf": [{ "$ref": "#/$defs/EngineSummary" }, { "type": "null" }] },
+        "risk": { "oneOf": [{ "$ref": "#/$defs/RiskSummary" }, { "type": "null" }] },
+        "positions": {
+          "oneOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/PositionView" } },
+            { "type": "null" }
+          ]
+        },
+        "orders": {
+          "oneOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/OrderView" } },
+            { "type": "null" }
+          ]
+        },
+        "alerts": {
+          "oneOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/AlertView" } },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "MarketTickSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["venue", "symbol", "bid", "ask", "last", "spread_bps", "ts_ms"],
+      "properties": {
+        "venue": { "$ref": "#/$defs/Venue" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "bid": { "$ref": "#/$defs/DecimalString" },
+        "ask": { "$ref": "#/$defs/DecimalString" },
+        "last": { "$ref": "#/$defs/DecimalString" },
+        "spread_bps": { "$ref": "#/$defs/DecimalString" },
+        "ts_ms": { "type": "integer" }
+      }
+    },
+    "MarketPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ticks"],
+      "properties": {
+        "ticks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MarketTickSummary" }
+        }
+      }
+    },
+    "EventPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "level", "message"],
+      "properties": {
+        "venue": { "oneOf": [{ "$ref": "#/$defs/Venue" }, { "type": "null" }] },
+        "symbol": { "type": ["string", "null"] },
+        "kind": { "type": "string", "minLength": 1 },
+        "level": { "$ref": "#/$defs/AlertLevel" },
+        "message": { "type": "string" }
+      }
+    },
+    "HeartbeatPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine_state", "ws_latency_ms", "weight_used", "weight_limit"],
+      "properties": {
+        "engine_state": { "$ref": "#/$defs/EngineMode" },
+        "ws_latency_ms": { "type": "integer", "minimum": 0 },
+        "weight_used": { "type": "integer", "minimum": 0 },
+        "weight_limit": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "CommandResultPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd_id", "ok", "code", "message"],
+      "properties": {
+        "cmd_id": { "$ref": "#/$defs/UuidString" },
+        "ok": { "type": "boolean" },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "confirm_nonce": { "type": ["string", "null"] },
+        "expires_at_ms": { "type": ["integer", "null"] }
+      }
+    },
+    "CommandKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["cmd"],
+          "properties": { "cmd": { "const": "pause" } }
+        },
+        {
+          "type": "object",
+          "required": ["cmd"],
+          "properties": { "cmd": { "const": "resume" } }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "target", "on_open_positions", "confirm_nonce"],
+          "properties": {
+            "cmd": { "const": "switch_venue" },
+            "target": { "$ref": "#/$defs/Venue" },
+            "on_open_positions": { "type": "string", "enum": ["refuse", "drain", "flatten"] },
+            "confirm_nonce": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "key", "value"],
+          "properties": {
+            "cmd": { "const": "set_param" },
+            "key": { "type": "string", "minLength": 1 },
+            "value": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "id"],
+          "properties": {
+            "cmd": { "const": "disable_strategy" },
+            "id": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "position_id"],
+          "properties": {
+            "cmd": { "const": "close_position" },
+            "position_id": { "$ref": "#/$defs/UuidString" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "action"],
+          "properties": {
+            "cmd": { "const": "request_confirm" },
+            "action": { "type": "string", "enum": ["panic_flatten", "reset_kill", "switch_venue"] }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "confirm_nonce"],
+          "properties": {
+            "cmd": { "const": "panic_flatten" },
+            "confirm_nonce": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "confirm_nonce"],
+          "properties": {
+            "cmd": { "const": "reset_kill" },
+            "confirm_nonce": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["cmd", "id"],
+          "properties": {
+            "cmd": { "const": "ack_alert" },
+            "id": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "CommandPayload": {
+      "type": "object",
+      "required": ["cmd_id", "cmd"],
+      "properties": {
+        "cmd_id": { "$ref": "#/$defs/UuidString" }
+      },
+      "allOf": [{ "$ref": "#/$defs/CommandKind" }],
+      "unevaluatedProperties": false
+    },
+    "AuthPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token"],
+      "properties": {
+        "token": { "type": "string", "minLength": 1 }
+      }
+    },
+    "EmptyPayload": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "HelloEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "hello" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/HelloPayload" }
+      }
+    },
+    "SnapshotEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "snapshot" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/SnapshotPayload" }
+      }
+    },
+    "DeltaEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "delta" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/DeltaPayload" }
+      }
+    },
+    "MarketEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "market" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/MarketPayload" }
+      }
+    },
+    "EventEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "event" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/EventPayload" }
+      }
+    },
+    "HeartbeatEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "heartbeat" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/HeartbeatPayload" }
+      }
+    },
+    "CommandResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "command_result" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/CommandResultPayload" }
+      }
+    },
+    "CommandEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "command" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/CommandPayload" }
+      }
+    },
+    "AuthEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "auth" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/AuthPayload" }
+      }
+    },
+    "RequestSnapshotEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "request_snapshot" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/EmptyPayload" }
+      }
+    },
+    "HttpErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

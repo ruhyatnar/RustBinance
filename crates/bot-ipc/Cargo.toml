@@ -7,3 +7,29 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.23.1"
+bot-config = { version = "0.1.0", path = "../bot-config" }
+bot-store = { version = "0.1.0", path = "../bot-store" }
+bot-types = { version = "0.1.0", path = "../bot-types" }
+futures-util = "0.3.34"
+rand = "0.10.4"
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle = "2.6.1"
+thiserror.workspace = true
+time.workspace = true
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+tracing.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+jsonschema = "0.63.1"
+reqwest = "0.13.5"
+tempfile.workspace = true
+tokio-tungstenite = "0.30.0"
