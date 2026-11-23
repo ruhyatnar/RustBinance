@@ -483,3 +483,47 @@ fn gatekeeper_checks_kelly_autodisable_tighten_only_and_equity_counters() {
     assert_eq!(counters.consecutive_losses(), 3);
     assert!(counters.loss_cooldown_until_ms().is_some());
 }
+
+#[test]
+fn manual_pause_and_kill_reset_can_resume_to_ready_and_invalid_risk_update_rejected() {
+    let mut m = EngineModeMachine::new(0);
+    m.apply(ModeTrigger::SyncStarted, 100);
+    m.apply(ModeTrigger::SyncComplete, 200);
+    assert_eq!(m.mode(), EngineMode::Ready);
+
+    // ManualPause ignores StableTick, then resumes explicitly via ManualResumeFromPause.
+    m.apply(
+        ModeTrigger::ManualPause {
+            reason: "operator".into(),
+        },
+        1_000,
+    );
+    assert_eq!(m.mode(), EngineMode::Paused);
+    m.apply(ModeTrigger::StableTick { now_ms: 10_000 }, 10_000);
+    m.apply(ModeTrigger::StableTick { now_ms: 20_000 }, 20_000);
+    assert_eq!(m.mode(), EngineMode::Paused);
+    m.apply(ModeTrigger::ManualResumeFromPause, 21_000);
+    assert_eq!(m.mode(), EngineMode::Ready);
+
+    // Killed -> ManualResetKill { confirmed: true } -> Paused -> ManualResumeFromPause -> Ready.
+    m.apply(ModeTrigger::ManualPanic, 22_000);
+    assert_eq!(m.mode(), EngineMode::Killed);
+    m.apply(ModeTrigger::ManualResetKill { confirmed: true }, 23_000);
+    assert_eq!(m.mode(), EngineMode::Paused);
+    m.apply(ModeTrigger::ManualResumeFromPause, 24_000);
+    assert_eq!(m.mode(), EngineMode::Ready);
+
+    // Gatekeeper::update_config must reject out-of-range values even if they satisfy directional check.
+    let mut gk = Gatekeeper::new(RiskConfig::default());
+    let invalid_daily = RiskConfig {
+        daily_loss_halt_pct: Decimal::from(10_i32), // +10% >= -2.5% but outside [-4.0, -0.5]!
+        ..RiskConfig::default()
+    };
+    let err = gk
+        .update_config(invalid_daily)
+        .expect_err("out-of-range daily_loss_halt_pct must be rejected");
+    assert!(
+        matches!(err, bot_risk::TightenOnlyError::Validation(_)),
+        "expected Validation error, got {err:?}"
+    );
+}

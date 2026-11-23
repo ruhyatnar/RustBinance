@@ -746,29 +746,32 @@ async fn run_manager(
 
                             let sleep_fut = tokio::time::sleep(delay);
                             tokio::pin!(sleep_fut);
-                            tokio::select! {
-                                () = &mut sleep_fut => {}
-                                cmd = cmd_rx.recv() => {
-                                    match cmd {
-                                        Some(ManagerCommand::Shutdown { reply }) => {
-                                            let _ = reply.send(());
-                                            shutdown_requested = true;
-                                            break;
-                                        }
-                                        None => {
-                                            shutdown_requested = true;
-                                            break;
-                                        }
-                                        Some(ManagerCommand::Request { reply, .. }) => {
-                                            let _ = reply.send(Err(GatewayError::SessionNotReady(SessionState::Disconnected)));
-                                            continue;
-                                        }
-                                        Some(ManagerCommand::ForceRotate { reply }) => {
-                                            let _ = reply.send(Err(GatewayError::SessionNotReady(SessionState::Disconnected)));
-                                            continue;
+                            loop {
+                                tokio::select! {
+                                    () = &mut sleep_fut => break,
+                                    cmd = cmd_rx.recv() => {
+                                        match cmd {
+                                            Some(ManagerCommand::Shutdown { reply }) => {
+                                                let _ = reply.send(());
+                                                shutdown_requested = true;
+                                                break;
+                                            }
+                                            None => {
+                                                shutdown_requested = true;
+                                                break;
+                                            }
+                                            Some(ManagerCommand::Request { reply, .. }) => {
+                                                let _ = reply.send(Err(GatewayError::SessionNotReady(SessionState::Disconnected)));
+                                            }
+                                            Some(ManagerCommand::ForceRotate { reply }) => {
+                                                let _ = reply.send(Err(GatewayError::SessionNotReady(SessionState::Disconnected)));
+                                            }
                                         }
                                     }
                                 }
+                            }
+                            if shutdown_requested {
+                                break;
                             }
 
                             let cid = next_conn_id;

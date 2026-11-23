@@ -1,6 +1,6 @@
 //! Pre-trade Gatekeeper (§7.2), operational health hooks, and runtime tighten-only updates.
 
-use bot_config::{BotConfig, LoosenError, RiskConfig, is_tightening};
+use bot_config::{BotConfig, ConfigError, LoosenError, RiskConfig, is_tightening};
 use bot_types::{
     Direction, EngineMode, InstrumentRules, Position, PositionState, Price, Qty, StrategyId,
     Symbol, Venue,
@@ -219,13 +219,15 @@ pub enum GateDecision {
     },
 }
 
-/// Error returned when a runtime risk config update attempts to loosen risk parameters.
+/// Error returned when a runtime risk config update is invalid or attempts to loosen parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("runtime risk config update rejected (tighten-only violated): {source}")]
-pub struct TightenOnlyError {
-    /// Underlying error from `bot_config::is_tightening`.
-    #[from]
-    pub source: LoosenError,
+pub enum TightenOnlyError {
+    /// New risk configuration violates strict schema/range bounds (`BotConfig::validate`).
+    #[error("runtime risk config update rejected (invalid bounds): {0}")]
+    Validation(#[from] ConfigError),
+    /// New risk configuration loosens one or more parameters relative to the active config.
+    #[error("runtime risk config update rejected (tighten-only violated): {0}")]
+    Loosened(#[from] LoosenError),
 }
 
 /// Stateless-per-call pre-trade Gatekeeper holding tighten-only [`RiskConfig`] (§7.2).
@@ -253,10 +255,11 @@ impl Gatekeeper {
         &self.config
     }
 
-    /// Update runtime [`RiskConfig`] enforcing strict **tighten-only** invariant (hard rule #8).
+    /// Update runtime [`RiskConfig`] enforcing valid bounds and strict **tighten-only** invariant (hard rule #8).
     ///
     /// # Errors
-    /// Returns [`TightenOnlyError`] if any parameter is loosened relative to the current config.
+    /// Returns [`TightenOnlyError::Validation`] if `new_risk` violates config range bounds, or
+    /// [`TightenOnlyError::Loosened`] if any parameter is loosened relative to the current config.
     pub fn update_config(&mut self, new_risk: RiskConfig) -> Result<(), TightenOnlyError> {
         let old_full = BotConfig {
             risk: self.config.clone(),
@@ -266,6 +269,7 @@ impl Gatekeeper {
             risk: new_risk.clone(),
             ..BotConfig::default()
         };
+        new_full.validate()?;
         is_tightening(&old_full, &new_full)?;
         self.config = new_risk;
         Ok(())

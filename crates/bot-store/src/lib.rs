@@ -10,5 +10,5 @@ pub use error::StoreError;
 pub use events::{
     EVENT_SCHEMA_VERSION, FillRecord, JournalEnvelope, JournalEvent, VenueStateRecord,
 };
-pub use state::PersistedEngineState;
+pub use state::{MAX_RETAINED_SNAPSHOT_FILLS, PersistedEngineState};
 pub use store::{COUNTER_ORDER_SEQ, COUNTER_RUN_ID, SqliteStore};

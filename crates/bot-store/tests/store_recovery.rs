@@ -526,3 +526,89 @@ fn io_errors_and_unsupported_schema_version_return_typed_errors() {
         StoreError::UnsupportedEventVersion { .. }
     ));
 }
+
+#[test]
+fn persisted_state_prunes_terminal_orders_closed_positions_and_caps_fills() {
+    let mut store = SqliteStore::open_in_memory().expect("mem");
+    let mut state = PersistedEngineState::default();
+    let mut seq_ts = 1_700_000_000_000_i64;
+
+    // Intended order -> Filled -> pruned from active orders map.
+    let ord = sample_order(Venue::Spot, "b01r1S-PRUNE1-ENT", 6_000_000, 100);
+    let e1 = JournalEnvelope::new(JournalEvent::OrderIntended { order: ord });
+    let s1 = store.append_event(seq_ts, &e1).expect("append");
+    state.apply_event(s1, &e1);
+    assert_eq!(state.orders.len(), 1);
+
+    seq_ts += 1_000;
+    let e2 = JournalEnvelope::new(JournalEvent::OrderStatusUpdated {
+        venue: Venue::Spot,
+        client_id: "b01r1S-PRUNE1-ENT".into(),
+        exchange_id: Some(77),
+        status: OrderStatus::Filled,
+        filled_qty: Qty(Decimal::new(100, 4)),
+        avg_fill_price: Some(Price(Decimal::new(6_000_000, 2))),
+        updated_at: sample_dt(seq_ts / 1000),
+    });
+    let s2 = store.append_event(seq_ts, &e2).expect("append");
+    state.apply_event(s2, &e2);
+    assert!(
+        state.orders.is_empty(),
+        "terminal orders must be pruned from active snapshot state"
+    );
+
+    // Open position -> Closed -> pruned from active positions map.
+    let pos_id = Uuid::from_u128(999);
+    seq_ts += 1_000;
+    let e3 = JournalEnvelope::new(JournalEvent::PositionOpened {
+        position: sample_position(pos_id, Venue::Spot, 6_000_000, 5_900_000),
+    });
+    let s3 = store.append_event(seq_ts, &e3).expect("append");
+    state.apply_event(s3, &e3);
+    assert_eq!(state.positions.len(), 1);
+
+    seq_ts += 1_000;
+    let e4 = JournalEnvelope::new(JournalEvent::PositionStateChanged {
+        venue: Venue::Spot,
+        position_id: pos_id,
+        state: PositionState::Closed,
+        qty_open: Qty(Decimal::ZERO),
+        realized_pnl_quote: Decimal::new(500, 2),
+        fees_paid_quote: Decimal::new(10, 2),
+        close_reason: Some("TP1".into()),
+    });
+    let s4 = store.append_event(seq_ts, &e4).expect("append");
+    state.apply_event(s4, &e4);
+    assert!(
+        state.positions.is_empty(),
+        "closed positions must be pruned from active snapshot state"
+    );
+
+    // Exceeding MAX_RETAINED_SNAPSHOT_FILLS caps fills deterministically.
+    let cap = bot_store::MAX_RETAINED_SNAPSHOT_FILLS;
+    for i in 1..=(cap + 20) {
+        seq_ts += 10;
+        let fill_env = JournalEnvelope::new(JournalEvent::FillRecorded {
+            fill: FillRecord {
+                venue: Venue::Spot,
+                trade_id: i64::try_from(i).expect("i64"),
+                symbol: Symbol("BTCUSDT".into()),
+                client_id: "b01r1S-PRUNE1-ENT".into(),
+                price: Price(Decimal::new(6_000_000, 2)),
+                qty: Qty(Decimal::new(10, 4)),
+                fee: Decimal::new(1, 2),
+                fee_asset: "USDT".into(),
+                is_maker: true,
+                ts_ms: seq_ts,
+            },
+        });
+        let s = store.append_event(seq_ts, &fill_env).expect("append");
+        state.apply_event(s, &fill_env);
+    }
+    assert_eq!(state.fills.len(), cap);
+    store
+        .snapshot_write(seq_ts, &state)
+        .expect("snapshot_write");
+    let recovered = store.recover_state().expect("recover");
+    assert_eq!(recovered, state);
+}

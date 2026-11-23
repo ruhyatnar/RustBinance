@@ -494,3 +494,64 @@ async fn watchdog_stale_timeout_triggers_reconnect_and_echoes_ping_payload() {
 
     handle.shutdown().await;
 }
+
+struct FailingDepthClient {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl DepthSnapshotClient for FailingDepthClient {
+    async fn fetch_depth_snapshot(
+        &self,
+        _venue: Venue,
+        _symbol: &Symbol,
+        _limit: u16,
+    ) -> Result<DepthSnapshot, MarketDataError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        Err(MarketDataError::Http("simulated 429".into()))
+    }
+}
+
+#[tokio::test]
+async fn depth_resync_coalesces_in_flight_and_respects_failure_cooldown() {
+    let mut frames = Vec::new();
+    for i in 0..8_u64 {
+        frames.push(
+            json!({
+                "stream": "btcusdt@depth@100ms",
+                "data": {
+                    "e": "depthUpdate", "E": 1000 + i * 100, "s": "BTCUSDT",
+                    "U": 100 + i, "u": 100 + i,
+                    "b": [["100.00", "1.0"]], "a": [["100.10", "1.0"]]
+                }
+            })
+            .to_string(),
+        );
+    }
+
+    let ws_base_url = spawn_fixture_ws(frames).await;
+    let failing_client = Arc::new(FailingDepthClient {
+        calls: AtomicUsize::new(0),
+    });
+
+    let mut plan = StreamPlan::new();
+    plan.add_depth_100ms(&Symbol("BTCUSDT".into()));
+    let cfg = MarketStreamConfig {
+        ws_base_url,
+        stale_timeout: Duration::from_secs(5),
+        ..MarketStreamConfig::default()
+    };
+
+    let (handle, _channels) =
+        spawn_market_stream(cfg, &plan, None, Some(failing_client.clone())).expect("spawn");
+
+    tokio::time::sleep(Duration::from_millis(180)).await;
+    assert_eq!(
+        failing_client.calls.load(Ordering::SeqCst),
+        1,
+        "rapid depth diffs while unsynced/cooling down must trigger only 1 REST snapshot fetch"
+    );
+
+    handle.shutdown().await;
+}

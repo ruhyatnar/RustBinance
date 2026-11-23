@@ -68,6 +68,8 @@ pub enum ModeTrigger {
     },
     /// UTC 00:00 rollover: auto-resets `Halted → Ready` ONLY when halted exclusively by daily loss.
     UtcDayRollover,
+    /// Operator manual resume from `Paused` (`Paused → Ready`).
+    ManualResumeFromPause,
     /// Operator manual resume from `Halted` (`Halted → Ready`).
     ManualResumeFromHalt,
     /// Peak-to-trough drawdown kill threshold hit (`Any → Killed`).
@@ -234,6 +236,11 @@ impl EngineModeMachine {
                         "UTC 00:00 rollover cleared daily loss halt".into(),
                         now_ms,
                     );
+                }
+            }
+            ModeTrigger::ManualResumeFromPause => {
+                if self.mode == EngineMode::Paused {
+                    self.transition(EngineMode::Ready, "manual resume from pause".into(), now_ms);
                 }
             }
             ModeTrigger::ManualResumeFromHalt => {

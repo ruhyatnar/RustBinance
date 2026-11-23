@@ -1,7 +1,7 @@
 //! Persistent Spot Market Streams client with 1500 ms stale watchdog, Ping/Pong payload echo,
 //! exponential reconnect backoff, and strict §3.3 backpressure channels.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,11 +16,16 @@ use tracing::{debug, info, warn};
 
 use crate::error::MarketDataError;
 use crate::kline::{KlineBackfillClient, KlineBuffer};
-use crate::orderbook::{DepthSnapshotClient, DiffApplyResult, LocalOrderBook};
-use crate::types::{BookTelemetry, BookTickerEvent, ClosedKlineEvent, KlineKey, MiniTickerItem};
+use crate::orderbook::{DepthSnapshotClient, DiffApplyResult, LocalOrderBook, SnapshotSyncResult};
+use crate::types::{
+    BookTelemetry, BookTickerEvent, ClosedKlineEvent, DepthSnapshot, KlineKey, MiniTickerItem,
+};
 use crate::wire::{
     MAX_STREAMS_PER_CONNECTION, MarketStreamMessage, StreamPlan, parse_market_stream_frame,
 };
+
+/// Minimum cooldown between failed/stale REST depth snapshot resync attempts per symbol.
+const RESYNC_RETRY_COOLDOWN: Duration = Duration::from_secs(2);
 
 /// Configuration for [`MarketStreamHandle`].
 #[derive(Debug, Clone)]
@@ -148,6 +153,10 @@ async fn run_stream_loop(
     let mut books: HashMap<Symbol, LocalOrderBook> = HashMap::new();
     let mut latest_book_tickers: HashMap<Symbol, BookTickerEvent> = HashMap::new();
     let mut latest_telemetry: HashMap<Symbol, BookTelemetry> = HashMap::new();
+    let (snap_tx, mut snap_rx) =
+        mpsc::channel::<(Symbol, Result<DepthSnapshot, MarketDataError>)>(64);
+    let mut resync_in_flight: HashSet<Symbol> = HashSet::new();
+    let mut resync_cooldown_until: HashMap<Symbol, tokio::time::Instant> = HashMap::new();
     let mut attempt: u32 = 0;
 
     loop {
@@ -192,6 +201,7 @@ async fn run_stream_loop(
         let (mut ws_sink, mut ws_read) = ws_stream.split();
 
         // Any reconnect invalidates existing local order books until resynced.
+        resync_cooldown_until.clear();
         for (sym, book) in &mut books {
             book.mark_invalid();
             latest_telemetry.insert(sym.clone(), book.telemetry());
@@ -207,6 +217,43 @@ async fn run_stream_loop(
                     if *shutdown_rx.borrow() {
                         let _ = ws_sink.send(Message::Close(None)).await;
                         return;
+                    }
+                    continue;
+                }
+                Some((sym, snap_res)) = snap_rx.recv() => {
+                    resync_in_flight.remove(&sym);
+                    if let Some(book) = books.get_mut(&sym) {
+                        match snap_res {
+                            Ok(snap) => match book.apply_snapshot(&snap) {
+                                SnapshotSyncResult::Synced => {
+                                    resync_cooldown_until.remove(&sym);
+                                }
+                                SnapshotSyncResult::SnapshotTooOld
+                                | SnapshotSyncResult::GapDetected => {
+                                    warn!(
+                                        symbol = %sym,
+                                        "order book snapshot stale or gapped; cooling down before retry"
+                                    );
+                                    resync_cooldown_until.insert(
+                                        sym.clone(),
+                                        tokio::time::Instant::now() + RESYNC_RETRY_COOLDOWN,
+                                    );
+                                }
+                            },
+                            Err(err) => {
+                                warn!(
+                                    symbol = %sym,
+                                    error = %err,
+                                    "order book snapshot fetch failed; cooling down before retry"
+                                );
+                                resync_cooldown_until.insert(
+                                    sym.clone(),
+                                    tokio::time::Instant::now() + RESYNC_RETRY_COOLDOWN,
+                                );
+                            }
+                        }
+                        latest_telemetry.insert(sym, book.telemetry());
+                        let _ = tel_tx.send(latest_telemetry.clone());
                     }
                     continue;
                 }
@@ -292,21 +339,34 @@ async fn run_stream_loop(
                                 DiffApplyResult::BufferedNeedsSnapshot
                                     | DiffApplyResult::GapDetectedNeedsResync
                             ) {
-                                // Publish Invalid/Syncing immediately before resyncing.
+                                // Publish Invalid/Syncing immediately and trigger at most one
+                                // non-blocking snapshot fetch per symbol respecting retry cooldown.
                                 latest_telemetry.insert(sym.clone(), book.telemetry());
                                 let _ = tel_tx.send(latest_telemetry.clone());
 
-                                if let Some(dc) = depth_client.as_deref()
-                                    && let Err(err) = book
-                                        .sync_from_client(dc, config.depth_snapshot_limit, 3)
-                                        .await
+                                let now = tokio::time::Instant::now();
+                                let cooling_down = resync_cooldown_until
+                                    .get(&sym)
+                                    .is_some_and(|&until| now < until);
+                                if !cooling_down
+                                    && !resync_in_flight.contains(&sym)
+                                    && let Some(dc) = depth_client.as_ref().map(Arc::clone)
                                 {
-                                    warn!(symbol = %sym, error = %err, "order book resync failed");
+                                    resync_in_flight.insert(sym.clone());
+                                    let tx = snap_tx.clone();
+                                    let venue = config.venue;
+                                    let limit = config.depth_snapshot_limit;
+                                    let req_sym = sym;
+                                    tokio::spawn(async move {
+                                        let snap_res =
+                                            dc.fetch_depth_snapshot(venue, &req_sym, limit).await;
+                                        let _ = tx.send((req_sym, snap_res)).await;
+                                    });
                                 }
+                            } else {
+                                latest_telemetry.insert(sym, book.telemetry());
+                                let _ = tel_tx.send(latest_telemetry.clone());
                             }
-
-                            latest_telemetry.insert(sym, book.telemetry());
-                            let _ = tel_tx.send(latest_telemetry.clone());
                         }
                         Ok(MarketStreamMessage::ServerShutdown { .. }) => {
                             info!("market stream received serverShutdown; reconnecting");

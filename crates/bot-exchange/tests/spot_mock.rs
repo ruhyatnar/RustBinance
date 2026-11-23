@@ -1092,3 +1092,52 @@ async fn no_secrets_appear_in_captured_logs_during_full_lifecycle() {
         "PEM leaked into tracing logs!"
     );
 }
+
+#[tokio::test]
+async fn reconnect_not_starved_by_requests_during_disconnect() {
+    let rest_url = spawn_mock_rest_server().await;
+    let state = Arc::new(MockWsState::default());
+    let ws_url = spawn_mock_ws_server(Arc::clone(&state)).await;
+
+    let creds = Ed25519Credentials::from_seed("RECONNECT_TEST_KEY".into(), [9u8; 32]).unwrap();
+    let adapter = SpotAdapter::new(
+        SpotAdapterConfig {
+            rest_url,
+            rest_timeout: Duration::from_secs(5),
+            session: SpotSessionConfig {
+                ws_url,
+                request_timeout: Duration::from_secs(2),
+                backoff_base: Duration::from_millis(120),
+                backoff_max: Duration::from_millis(120),
+                ..SpotSessionConfig::default()
+            },
+        },
+        creds,
+    )
+    .expect("build adapter");
+
+    adapter.activate().await.expect("activate");
+    assert_eq!(state.conn_count.load(Ordering::SeqCst), 1);
+
+    // Drop connection 1 abruptly.
+    state.drop_first_conn_notify.notify_waiters();
+
+    // Repeatedly send requests faster than the 120ms backoff while disconnected;
+    // reconnect must still complete instead of resetting the backoff timer forever.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut reconnected = false;
+    while tokio::time::Instant::now() < deadline {
+        if adapter.account_snapshot().await.is_ok() && state.conn_count.load(Ordering::SeqCst) >= 2
+        {
+            reconnected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert!(
+        reconnected,
+        "requests during disconnect must not starve WS reconnect"
+    );
+    adapter.deactivate().await.expect("deactivate");
+}
