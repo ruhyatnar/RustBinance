@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M03 (selesai — menunggu persetujuan pemilik untuk lanjut ke M04)
+**Milestone aktif:** M04 (selesai — menunggu persetujuan pemilik untuk lanjut ke M05)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-22
 
@@ -9,7 +9,7 @@
 - [x] **M01** — bot-types & bot-config  → `docs/milestones/M01-*.md`
 - [x] **M02** — bot-exchange Spot: REST + WS API session  → `docs/milestones/M02-*.md`
 - [x] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
-- [ ] **M04** — bot-indicators  → `docs/milestones/M04-*.md`
+- [x] **M04** — bot-indicators  → `docs/milestones/M04-*.md`
 - [ ] **M05** — bot-store: SQLite journal/snapshot/recovery  → `docs/milestones/M05-*.md`
 - [ ] **M06** — bot-risk: gatekeeper, sizing, breakers  → `docs/milestones/M06-*.md`
 - [ ] **M07** — bot-exec + bot-engine + paper broker  → `docs/milestones/M07-*.md`
@@ -28,12 +28,9 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-22 (M03):** Implementasikan `bot-marketdata` (§3.3, §4.3, §6.2):
-  - Klien Market Streams (`StreamPlan` membatasi ≤1024 stream/koneksi, combined URL `/stream?streams=...`, parser `kline`, `bookTicker`, `depthUpdate`, `!miniTicker@arr`, `serverShutdown`; `spawn_market_stream` dengan watchdog basi 1500 ms, balasan `Pong` menyalin payload `Ping`, backoff eksponensial + full jitter).
-  - Kebijakan backpressure §3.3: `closed_klines_rx` via `mpsc` bounded (4096, tidak pernah drop); `bookTicker`, `BookTelemetry`, dan `!miniTicker@arr` via `watch` conflation.
-  - `KlineBuffer` per `(Venue, Symbol, Timeframe)`: hanya `x=true` yang memicu event, deteksi gap + backfill via `KlineBackfillClient` (`SpotMarketRestClient` `GET /api/v3/klines`), dan status `is_ready()` setelah warm-up terpenuhi tanpa gap.
-  - `LocalOrderBook` dengan prosedur sinkronisasi resmi Binance Spot (buffer → snapshot `GET /api/v3/depth` → buang `u <= lastUpdateId` → cek kontinuitas → `BookStatus::Invalid` saat gap + resync), kalkulasi `spread_bps` (`Decimal`) dan `OBI` top-N + EMA (`f64`, selalu `None` saat `Invalid`).
-  - `UniverseFilter` (§6.2: kuotasi USDT, status `TRADING`, volume/spread/usia untuk core & scanner, eksklusi leveraged token, stable-vs-stable, dan `exclude_symbols`) + trait `UniverseProvider` & `spawn_universe_refresher` (15 menit).
-  - Verifikasi prosedur order book Spot & batas Market Streams dicatat di `docs/verified-facts.md`; indeks `codegraph` dan `graphify` disinkronkan.
-- **Tes lulus:** `./scripts/verify.sh` hijau (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` — termasuk 6 unit test + 4 mock integration test `bot-marketdata`: fixture gap → `Invalid` → resync konsisten, kline non-closed tidak memicu sinyal + backfill gap, tes beban 20 simbol × 3 TF = 300 closed klines tanpa drop, watchdog 1500 ms reconnect + ping/pong; secret scan ok); kompilasi & clippy `--features testnet-it` juga hijau.
-- **Belum teruji:** Tes kontrak live Spot Testnet (`cargo test -p bot-marketdata --features testnet-it`) belum dijalankan; `cargo-deny` belum terpasang di VM ini; perubahan M03 baru di-commit lokal dan belum di-`git push`.
+- **2026-11-22 (M04):** Implementasikan seluruh indikator teknikal inkremental O(1), bebas I/O, tanpa alokasi per `update` di `bot-indicators` (§6.3):
+  - `Ema` (seed SMA, `warmup_bars = 3n`), `Rsi` Wilder (`warmup_bars = n + 1`), `Atr` Wilder (`warmup_bars = n + 1`), `Adx` / `+DI` / `−DI` Wilder (`warmup_bars = 2n`), `Donchian` (bar sebelumnya dengan fixed-capacity circular monotonic deque, `warmup_bars = n + 1`, bebas look-ahead), `SessionVwap` (reset 00:00 UTC), dan `VolumeSma` (ring buffer O(1)) + trait `Indicator`.
+  - Definisi matematis Wilder dicatat di `docs/verified-facts.md`; fixture referensi 650 bar disimpan di `crates/bot-indicators/tests/fixtures/reference_indicators.json`.
+  - Commit M03 (`89da521`) sudah di-push ke `origin/main`; indeks `codegraph` dan `graphify` disinkronkan.
+- **Tes lulus:** `./scripts/verify.sh` hijau (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` — termasuk 4 tes `bot-indicators`: kecocokan fixture referensi toleransi `1e-6`, edge case warm-up & input degeneratif, uji anti look-ahead, dan benchmark O(1) 50.000 bar; secret scan ok).
+- **Belum teruji:** `cargo-deny` belum terpasang di VM ini; commit M04 baru tersimpan lokal dan belum di-`git push`.

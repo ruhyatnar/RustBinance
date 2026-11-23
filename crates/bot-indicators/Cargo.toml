@@ -7,3 +7,10 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bot-types = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

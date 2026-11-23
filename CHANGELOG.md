@@ -2,6 +2,8 @@
 Format: Keep a Changelog. Setiap perubahan perilaku trading wajib tercatat.
 
 ## [Unreleased]
+- **M04:** Implementasikan `bot-indicators` (§6.3): indikator inkremental O(1), bebas I/O, tanpa alokasi per update (`Ema` seed SMA + warm-up `3n`, `Rsi` Wilder, `Atr` Wilder, `Adx`/`+DI`/`−DI` Wilder, `Donchian` bar sebelumnya via fixed circular monotonic deque, `SessionVwap` reset 00:00 UTC, dan `VolumeSma`) + trait `Indicator`.
+- **M04:** Tambahkan fixture referensi 650 bar (`tests/fixtures/reference_indicators.json`) dengan uji kecocokan `1e-6`, edge case warm-up, uji anti look-ahead, dan verifikasi kompleksitas O(1) atas 50.000 bar.
 - **M03:** Implementasikan `bot-marketdata` (§3.3, §4.3, §6.2): klien Spot Market Streams (`StreamPlan` ≤1024 stream, combined stream `kline`/`bookTicker`/`depth@100ms`/`!miniTicker@arr`, watchdog 1500 ms, ping/pong payload echo, reconnect backoff eksponensial + full jitter) dengan kebijakan channel `mpsc` bounded (4096) untuk kline closed dan `watch` conflation untuk book/telemetry.
 - **M03:** Implementasikan `KlineBuffer` per `(Venue, Symbol, Timeframe)` (hanya `x=true` memicu event, deteksi gap + backfill REST `GET /api/v3/klines`, status warm-up `is_ready()`), `LocalOrderBook` sinkronisasi resmi Spot (`Invalid` saat gap + resync, OBI top-N EMA & spread bps `Decimal`), serta `UniverseFilter` + `UniverseProvider` (refresh 15 menit).
 - **M03:** Tambahkan 6 unit test, 4 mock integration test (gap → `Invalid` → resync, kline non-closed + backfill, beban 20 simbol × 3 TF tanpa drop, watchdog reconnect), dan tes kontrak opsional `testnet-it`.

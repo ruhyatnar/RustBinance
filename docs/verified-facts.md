@@ -103,4 +103,18 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Diverifikasi: 2026-11-22 oleh agen
 - Dampak ke spec: tidak ada (sesuai §4.3 dan §6.2; eksklusi simbol monitoring/seed memakai `exclude_symbols` di `bot.toml` sebagaimana sudah dicatat pada entri M03 sebelumnya).
 
+## Definisi Matematis Indikator & Wilder Smoothing   (milestone: M04)
+- Fakta:
+  - **EMA(n)**: $\alpha = 2/(n+1)$, seed = SMA $n$ bar pertama, `warmup_bars = 3n` (mis. EMA(200) membutuhkan 600 bar sebelum menghasilkan `Some(...)`).
+  - **RSI(n) Wilder**: perubahan harga dihitung mulai bar ke-2 (`bar[1] - bar[0]`); seed `avg_gain`/`avg_loss` = rata-rata $n$ perubahan pertama pada bar indeks $n$ (`warmup_bars = n + 1`, identik TA-Lib); update berikutnya `avg = (avg * (n - 1) + cur) / n`. Kasus khusus: `avg_loss == 0 && avg_gain == 0` → `50.0`, `avg_loss == 0` → `100.0`.
+  - **ATR(n) Wilder**: True Range `max(H - L, |H - prevC|, |L - prevC|)` untuk $n$ bar pertama setelah bar 0, seed = SMA $n$ nilai TR (`warmup_bars = n + 1`, identik TA-Lib), update `atr = (atr * (n - 1) + tr) / n`.
+  - **ADX(n), +DI(n), −DI(n) Wilder**: smoothing Wilder untuk `TR`, `+DM`, `−DM` dengan `sm_t = sm_{t-1} - sm_{t-1}/n + cur_t` (seed jumlah $n$ bar pertama setelah bar 0); `DX = 100 * |+DI - -DI| / (+DI + -DI)`; seed `ADX` = rata-rata $n$ nilai `DX` pertama pada bar indeks $2n - 1$ (`warmup_bars = 2n`, identik TA-Lib); update `adx = (adx * (n - 1) + dx) / n`.
+  - **Donchian(n)**: highest high / lowest low dari **$n$ bar sebelumnya** (tidak termasuk bar sinyal saat ini; `warmup_bars = n + 1`, bebas look-ahead).
+  - **VWAP sesi**: `Σ(typical × vol) / Σvol` dengan `typical = (H + L + C)/3`, reset pada batas hari `00:00 UTC` (`open_time_ms.div_euclid(86_400_000)`).
+  - **Volume SMA(n)**: rata-rata bergerak volume $n$ bar closed dalam O(1) memakai ring buffer teralokasi statis.
+- Sumber: J. Welles Wilder (1978) *New Concepts in Technical Trading Systems*; konvensi TA-Lib; `docs/spec/06-strategy.md` §6.3
+- Diverifikasi: 2026-11-22 oleh agen
+- Dampak ke spec: tidak ada (sesuai §6.3).
+
+
 
