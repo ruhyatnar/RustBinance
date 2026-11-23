@@ -116,5 +116,14 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Diverifikasi: 2026-11-22 oleh agen
 - Dampak ke spec: tidak ada (sesuai §6.3).
 
+## Spot OCO (`orderList.place.oco`), `…TrailingDelta`, `listStatus`, dan Penolakan `LIMIT_MAKER`   (milestone: M07)
+- Fakta:
+  - **`orderList.place.oco` & `belowTrailingDelta`**: Untuk leg `belowType` bertipe `STOP_LOSS_LIMIT` / `STOP_LOSS` / `TAKE_PROFIT` / `TAKE_PROFIT_LIMIT`, wajib menyertakan `belowStopPrice` atau `belowTrailingDelta` (`int64`, satuan BIPS) atau keduanya; `STOP_LOSS_LIMIT` juga menyertakan `belowPrice` dan `belowTimeInForce` (`GTC`). Leg `aboveType = LIMIT_MAKER` memakai `abovePrice` (tanpa `timeInForce`).
+  - **Format event `listStatus` (`SPOT_WSS.yaml`)**: `e: "listStatus"`, `E` (event time ms), `s` (symbol), `g` (`orderListId`), `c` (`contingencyType`, mis. `"OCO"`), `l` (`listStatusType`: `RESPONSE`/`EXEC_STARTED`/`ALL_DONE`), `L` (`listOrderStatus`: `EXECUTING`/`ALL_DONE`/`REJECT`), `r` (`listRejectReason`, `"NONE"`), `C` (`listClientOrderId`), `T` (transaction time ms), `O` (array `{s, i: orderId, c: clientOrderId}`).
+  - **Penolakan `LIMIT_MAKER`**: Binance Spot menolak `LIMIT_MAKER` yang langsung match dengan kode error **`-2010`** (`NEW_ORDER_REJECTED`) dan pesan `"Order would immediately match and take."`. Untuk `order.cancelReplace`, status **`409`** menandakan kegagalan/keberhasilan parsial (`cancelResult` & `newOrderResult`).
+- Sumber: `binance-docs/SPOT_WS.yaml`, `binance-docs/SPOT_WSS.yaml`, `https://developers.binance.com/en/docs/products/spot/errors`, `https://developers.binance.com/en/docs/products/spot/testnet/web-socket-api`
+- Diverifikasi: 2026-11-23 oleh agen
+- Dampak ke spec: tidak ada (sesuai §4.4, §5.4, dan Lampiran A).
+
 
 
