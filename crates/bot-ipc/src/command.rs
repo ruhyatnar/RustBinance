@@ -311,6 +311,7 @@ impl<B: IpcBackend> CommandDispatcher<B> {
 /// and §7.4 engine mode transitions (`Ready ⇄ Paused`, `Any -> Killed`, `Killed -> Paused`).
 pub struct InMemoryIpcBackend {
     instance_id: Uuid,
+    build_mode: TradingMode,
     state: RwLock<InMemoryState>,
 }
 
@@ -321,10 +322,11 @@ struct InMemoryState {
 }
 
 impl InMemoryIpcBackend {
-    /// Construct a paper-mode backend initialized from `config`.
+    /// Construct a backend initialized from `config` (defaults to `TradingMode::Paper`).
     #[must_use]
     pub fn new(config: BotConfig) -> Self {
         let mode = EngineMode::Ready;
+        let build_mode = config.general.mode;
         let snapshot = SnapshotPayload {
             venues: VenuesSummary {
                 active: Venue::Spot,
@@ -335,7 +337,7 @@ impl InMemoryIpcBackend {
             },
             engine: EngineSummary {
                 mode,
-                build_mode: config.general.mode,
+                build_mode,
                 uptime_s: 0,
                 ws_latency_ms: 0,
                 clock_drift_ms: 0,
@@ -367,6 +369,7 @@ impl InMemoryIpcBackend {
         };
         Self {
             instance_id: Uuid::now_v7(),
+            build_mode,
             state: RwLock::new(InMemoryState {
                 config,
                 mode,
@@ -388,7 +391,7 @@ impl IpcBackend for InMemoryIpcBackend {
     }
 
     fn build_mode(&self) -> TradingMode {
-        TradingMode::Paper
+        self.build_mode
     }
 
     async fn snapshot(&self) -> SnapshotPayload {

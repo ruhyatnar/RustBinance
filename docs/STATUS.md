@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M10 (selesai — menunggu persetujuan pemilik untuk lanjut ke M11)
+**Milestone aktif:** M11 (selesai — menunggu persetujuan pemilik untuk lanjut ke M12)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-23
 
@@ -16,7 +16,7 @@
 - [x] **M08** — bot-strategy: S1, S2, shadow S3/S4 (Long)  → `docs/milestones/M08-*.md`
 - [x] **M09** — bot-backtest: replay & walk-forward  → `docs/milestones/M09-*.md`
 - [x] **M10** — bot-ipc + botctl  → `docs/milestones/M10-*.md`
-- [ ] **M11** — web-ui  → `docs/milestones/M11-*.md`
+- [x] **M11** — web-ui  → `docs/milestones/M11-*.md`
 - [ ] **M12** — desktop-ui (Qt6/Plasma 6)  → `docs/milestones/M12-*.md`
 - [ ] **M13** — Packaging, installer, systemd, chaos suite  → `docs/milestones/M13-*.md`
 - [ ] **M14** — OPERASIONAL: gerbang Spot G2→G5  → `docs/milestones/M14-*.md`
@@ -28,9 +28,10 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-23 (M10):** Implementasikan `bot-ipc`, `protocol/ipc-v1.schema.json` + fixture UI, audit `JournalEvent::Command`, serta CLI `binance-botctl` (§10, §7.4, §12.3, §12.5):
-  - `protocol/ipc-v1.schema.json` & `protocol/fixtures/v1/*.json`: skema JSON Draft 2020-12 sebagai sumber kebenaran tunggal untuk Rust, TypeScript (Web UI), dan QML (Desktop UI), mencakup `hello`, `snapshot`, `delta`, `market`, `event`, `heartbeat`, `command_result`, `command`, `auth`, `request_snapshot`, dan respons error HTTP seragam (`{ "error": { "code", "message" } }`); semua desimal bertipe string dan seluruh posisi/order/market membawa `venue`.
-  - `bot-ipc`: server UDS (`SO_PEERCRED` via `PeerAuthPolicy`, izin `0660`, NDJSON) dan Axum HTTP/WS loopback (`127.0.0.1`) dengan auth wajib di semua endpoint (`TokenAuth` full vs read-only via `Secret<String>` & perbandingan constant-time `subtle`), penolakan eksplisit token di query string (`?token=`/`?access_token=`), cek `Origin` ketat (CORS default tutup), header `Content-Security-Policy`, `RateLimiter` per-caller, `ConfirmNonceStore` 10 detik sekali pakai untuk `panic_flatten`/`reset_kill`, `CommandDispatcher` idempoten (`cmd_id`) dengan `set_param` tighten-only (`bot_config::is_tightening`), stub `switch_venue` → `not_supported` sampai M16, audit penuh ke SQLite `journal` (`kind = "Command"`), serta `conflate` (5–10 Hz) + `TelemetryHub` non-blocking yang memutus klien lambat tanpa memblok engine.
-  - `botctl` (`binance-botctl`): subperintah `keygen` (Ed25519 PKCS#8 `0600` & SPKI `0644` sejak dibuat via `OpenOptions::create_new`, zeroize memori kunci, menolak menimpa kunci lama), `config validate`, `status [--json]`, `pause`, `resume`, `panic-flatten --confirm`, dan `reset-kill --confirm`.
-  - **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` **108/108** lulus — termasuk 2 tes kontrak skema & fixture UI, 5 tes keamanan/auth/Origin/query-token/rate-limit/nonce/audit/UDS `0660`+`SO_PEERCRED`/conflation/klien lambat, serta 3 tes integrasi `botctl`; `cargo deny check` ok; secret scan ok).
-  - **Belum teruji:** Wiring daemon penuh `binance-botd` dengan engine + IPC (M13), Web UI (M11), Desktop UI (M12), dan logika `switch_venue` sungguhan (M16); commit M10 belum di-`git push`.
+- **2026-11-23 (M11):** Implementasikan `web-ui` (SvelteKit 2 `adapter-static` SPA + Svelte 5 runes + Tailwind CSS v4 + Lightweight Charts) serta 4 perbaikan kompatibilitas `bot-ipc`/CI (§11.1–§11.3, §11.5, §10):
+  - `bot-ipc`: tambahkan `"auth_scope": "readonly" | "full"` pada `GET /api/v1/health` dan selaraskan `InMemoryIpcBackend::build_mode()` dengan `config.general.mode` (+ tes regresi).
+  - `web-ui/src/lib/api/`: mirror TypeScript penuh `protocol/ipc-v1.schema.json` (`types.ts` + tes kontrak terhadap seluruh 9 fixture `protocol/fixtures/v1/*.json`), `IpcHttpClient` (header `Authorization: Bearer`, normalisasi `HttpErrorResponse` & `CommandResultPayload` ke `ApiError`), serta runes store `stream.svelte.ts` (token hanya memori/`sessionStorage`, nol `localStorage`, *first-message WS auth*, reconnect backoff eksponensial, deteksi gap `seq` → `request_snapshot`, mode read-only default + unlock eksplisit untuk token penuh).
+  - `web-ui/src/lib/format/decimal.ts`: formatter desimal murni berbasis string (`formatDecimalString`, `decimalSign`, `decimalDirectionIcon` ▲/▼/•) tanpa `parseFloat` untuk nilai presisi.
+  - Komponen & 9 layar: `AuthGate`, `ModeBanner` (`PAPER` biru / `TESTNET` kuning / `LIVE` merah-oranye bergaris + venue + status engine), `HoldToConfirm` (tahan 1,5 detik + nonce 10 detik, blokir pintasan 1 tombol), `RiskGauge`, `PositionTable`, `SignalsFeed`, `EventLog`, `DepthLadder`, `Candles` (Lightweight Charts), serta 9 rute (`Cockpit`, `Positions`, `Signals`, `Market`, `Risk`, `Performance`, `Logs`, `Settings` tighten-only, `System`).
+  - **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` **109/109** lulus, `cargo deny check` ok, `web-ui`: `npm ci && npm run check` 0 error/0 warning, `npm test` **23/23** Vitest lulus, `npm run build` static SPA selesai, secret scan ok).
+  - **Belum teruji:** Uji manual browser interaktif terhadap daemon paper/testnet hidup (`binance-botd` wiring di M13), Desktop UI Qt6/QML (M12), dan Venue Switcher (M16); commit M11 belum di-`git push`.

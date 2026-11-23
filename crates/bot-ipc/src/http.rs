@@ -210,9 +210,10 @@ async fn handle_health<B: IpcBackend>(
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(err) = check_http_request(&state, &uri, &headers, false) {
-        return error_response(&err);
-    }
+    let (_principal, scope) = match check_http_request(&state, &uri, &headers, false) {
+        Ok(auth) => auth,
+        Err(err) => return error_response(&err),
+    };
     let mode = state.dispatcher.backend().engine_mode().await;
     with_security_headers(
         (
@@ -220,6 +221,7 @@ async fn handle_health<B: IpcBackend>(
             Json(serde_json::json!({
                 "status": "ok",
                 "engine_mode": mode,
+                "auth_scope": scope.as_str(),
                 "ts_ms": unix_now_ms()
             })),
         )

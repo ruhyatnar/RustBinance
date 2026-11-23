@@ -4,6 +4,7 @@ node_modules/
 build/
 desktop-ui/build/
 web-ui/build/
+.svelte-kit/
 
 # Secrets & local runtime data
 *.pem

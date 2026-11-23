@@ -1,0 +1,15 @@
+@import 'tailwindcss';
+
+:root {
+	color-scheme: dark;
+}
+
+.live-banner-stripes {
+	background-image: repeating-linear-gradient(
+		-45deg,
+		rgba(220, 38, 38, 0.95),
+		rgba(220, 38, 38, 0.95) 12px,
+		rgba(234, 88, 12, 0.95) 12px,
+		rgba(234, 88, 12, 0.95) 24px
+	);
+}

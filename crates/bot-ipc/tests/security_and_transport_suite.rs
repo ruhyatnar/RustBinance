@@ -242,6 +242,48 @@ async fn rate_limiter_blocks_excess_requests() {
 }
 
 #[tokio::test]
+async fn health_exposes_auth_scope_and_backend_reads_config_build_mode() {
+    let mut cfg = BotConfig::default();
+    cfg.general.mode = bot_types::TradingMode::Testnet;
+    let backend = Arc::new(InMemoryIpcBackend::new(cfg));
+    assert_eq!(backend.build_mode(), bot_types::TradingMode::Testnet);
+
+    let dispatcher = Arc::new(CommandDispatcher::new(
+        backend,
+        None,
+        ConfirmNonceStore::new(Duration::from_secs(10)),
+    ));
+    let hub = Arc::new(TelemetryHub::new(16));
+    let (addr, handle) = spawn_http_server(dispatcher, hub, 10).await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let ro_resp: serde_json::Value = client
+        .get(format!("{base}/api/v1/health"))
+        .header("Authorization", "Bearer ro-secret-token-67890")
+        .send()
+        .await
+        .expect("ro health")
+        .json()
+        .await
+        .expect("ro json");
+    assert_eq!(ro_resp["auth_scope"], "readonly");
+
+    let full_resp: serde_json::Value = client
+        .get(format!("{base}/api/v1/health"))
+        .header("Authorization", "Bearer full-secret-token-12345")
+        .send()
+        .await
+        .expect("full health")
+        .json()
+        .await
+        .expect("full json");
+    assert_eq!(full_resp["auth_scope"], "full");
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn commands_nonce_expiry_idempotency_tighten_only_switch_stub_and_audit() {
     let dir = TempDir::new().expect("tempdir");
     let store = Arc::new(Mutex::new(
