@@ -7,3 +7,18 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bot-types = { workspace = true }
+rusqlite = { version = "0.43.0", features = ["bundled", "backup"] }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }

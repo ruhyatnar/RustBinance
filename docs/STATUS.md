@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M04 (selesai — menunggu persetujuan pemilik untuk lanjut ke M05)
+**Milestone aktif:** M05 (selesai — menunggu persetujuan pemilik untuk lanjut ke M06)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-22
 
@@ -10,7 +10,7 @@
 - [x] **M02** — bot-exchange Spot: REST + WS API session  → `docs/milestones/M02-*.md`
 - [x] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
 - [x] **M04** — bot-indicators  → `docs/milestones/M04-*.md`
-- [ ] **M05** — bot-store: SQLite journal/snapshot/recovery  → `docs/milestones/M05-*.md`
+- [x] **M05** — bot-store: SQLite journal/snapshot/recovery  → `docs/milestones/M05-*.md`
 - [ ] **M06** — bot-risk: gatekeeper, sizing, breakers  → `docs/milestones/M06-*.md`
 - [ ] **M07** — bot-exec + bot-engine + paper broker  → `docs/milestones/M07-*.md`
 - [ ] **M08** — bot-strategy: S1, S2, shadow S3/S4 (Long)  → `docs/milestones/M08-*.md`
@@ -28,9 +28,9 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-22 (M04):** Implementasikan seluruh indikator teknikal inkremental O(1), bebas I/O, tanpa alokasi per `update` di `bot-indicators` (§6.3):
-  - `Ema` (seed SMA, `warmup_bars = 3n`), `Rsi` Wilder (`warmup_bars = n + 1`), `Atr` Wilder (`warmup_bars = n + 1`), `Adx` / `+DI` / `−DI` Wilder (`warmup_bars = 2n`), `Donchian` (bar sebelumnya dengan fixed-capacity circular monotonic deque, `warmup_bars = n + 1`, bebas look-ahead), `SessionVwap` (reset 00:00 UTC), dan `VolumeSma` (ring buffer O(1)) + trait `Indicator`.
-  - Definisi matematis Wilder dicatat di `docs/verified-facts.md`; fixture referensi 650 bar disimpan di `crates/bot-indicators/tests/fixtures/reference_indicators.json`.
-  - Commit M03 (`89da521`) sudah di-push ke `origin/main`; indeks `codegraph` dan `graphify` disinkronkan.
-- **Tes lulus:** `./scripts/verify.sh` hijau (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` — termasuk 4 tes `bot-indicators`: kecocokan fixture referensi toleransi `1e-6`, edge case warm-up & input degeneratif, uji anti look-ahead, dan benchmark O(1) 50.000 bar; secret scan ok).
-- **Belum teruji:** `cargo-deny` belum terpasang di VM ini; commit M04 baru tersimpan lokal dan belum di-`git push`.
+- **2026-11-22 (M05):** Implementasikan `bot-store` (§8.1–§8.2, §5.1–§5.2) dengan SQLite WAL + `synchronous=FULL` + `foreign_keys=ON` (`rusqlite` 0.43.0 bundled SQLite 3.54+ menambal `RUSTSEC-2026-0459` / `CVE-2026-119375`; workspace MSRV dinaikkan ke 1.89):
+  - Migrasi bernomor idempoten `migrations/0001_init.sql` (mencakup kolom `venue`, tabel `journal`, `orders`, `fills`, `positions`, `risk_state`, `venue_state`, `snapshots`, `signals_shadow`, `counters`, `schema_migrations`).
+  - `JournalEnvelope` berversi (`EVENT_SCHEMA_VERSION = 1`, JSON dengan `Decimal` sebagai string), `PersistedEngineState` dengan replay deterministik (`recover_state()` = snapshot terakhir + journal setelah `last_seq`), API lengkap (`append_event`, `upsert_order/fill/position`, `snapshot_write/read_latest`, `risk_state_get/set`, `venue_state_get/set`, counter persisten `next_run_id`/`next_order_seq`, dan online `.backup` via `backup_to`), serta `StoreError` bertipe (`DiskFull`/`IoError`/`Corruption` → `is_fatal_storage()`).
+  - Commit M04 (`526a467`) sudah di-push ke `origin/main`; `cargo-deny` dan `cargo-nextest` terpasang; indeks `codegraph` dan `graphify` disinkronkan.
+- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 64/64 — termasuk 4 tes `bot-store`: migrasi idempoten/CRUD/counter/backup, `proptest` replay snapshot+journal acak == state asli, uji crash proses anak `std::process::abort()` di tengah transaksi + `PRAGMA integrity_check`, dan uji error I/O & versi skema; `cargo deny check` advisories/bans/licenses/sources OK; secret scan OK).
+- **Belum teruji:** Rekonsiliasi dengan exchange pasca-recovery (cakupan M07); simulasi disk penuh nyata pada filesystem terbatas (`SQLITE_FULL` dipetakan langsung ke `StoreError::DiskFull`); commit M05 baru tersimpan lokal dan belum di-`git push`.

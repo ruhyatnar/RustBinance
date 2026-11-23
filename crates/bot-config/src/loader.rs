@@ -131,28 +131,28 @@ fn sorted_conf_d_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
 
 fn build_figment(paths: &ConfigSourcePaths) -> Result<Figment, ConfigError> {
     let mut figment = Figment::from(Serialized::defaults(BotConfig::default()));
-    if let Some(base) = &paths.base_file {
-        if let Some(meta) = probe_optional_path(base)? {
-            if !meta.is_file() {
-                return Err(ConfigError::Io {
-                    path: base.clone(),
-                    message: "expected a regular file".to_owned(),
-                });
-            }
-            figment = figment.merge(Toml::file(base));
+    if let Some(base) = &paths.base_file
+        && let Some(meta) = probe_optional_path(base)?
+    {
+        if !meta.is_file() {
+            return Err(ConfigError::Io {
+                path: base.clone(),
+                message: "expected a regular file".to_owned(),
+            });
         }
+        figment = figment.merge(Toml::file(base));
     }
-    if let Some(conf_d) = &paths.conf_d_dir {
-        if let Some(meta) = probe_optional_path(conf_d)? {
-            if !meta.is_dir() {
-                return Err(ConfigError::Io {
-                    path: conf_d.clone(),
-                    message: "expected a directory".to_owned(),
-                });
-            }
-            for file in sorted_conf_d_files(conf_d)? {
-                figment = figment.merge(Toml::file(file));
-            }
+    if let Some(conf_d) = &paths.conf_d_dir
+        && let Some(meta) = probe_optional_path(conf_d)?
+    {
+        if !meta.is_dir() {
+            return Err(ConfigError::Io {
+                path: conf_d.clone(),
+                message: "expected a directory".to_owned(),
+            });
+        }
+        for file in sorted_conf_d_files(conf_d)? {
+            figment = figment.merge(Toml::file(file));
         }
     }
     if let Some(prefix) = &paths.env_prefix {

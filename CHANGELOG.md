@@ -2,6 +2,9 @@
 Format: Keep a Changelog. Setiap perubahan perilaku trading wajib tercatat.
 
 ## [Unreleased]
+- **M05:** Implementasikan `bot-store` (§8.1–§8.2, §5.1–§5.2): migrasi bernomor idempoten `0001_init.sql` (kolom `venue`, `venue_state`, `journal`, `orders`, `fills`, `positions`, `risk_state`, `snapshots`, `signals_shadow`, `counters`), SQLite WAL + `synchronous=FULL` + `foreign_keys=ON` (`rusqlite` 0.43.0 bundled SQLite 3.54+ menambal `RUSTSEC-2026-0459`; workspace MSRV → 1.89).
+- **M05:** Implementasikan `JournalEnvelope` berversi (`EVENT_SCHEMA_VERSION = 1`), `PersistedEngineState` + replay deterministik (`recover_state`), API CRUD/snapshot/counter (`next_run_id`, `next_order_seq`), backup online `.backup` (`backup_to`), dan `StoreError` bertipe (`DiskFull`/`IoError`/`Corruption`).
+- **M05:** Tambahkan tes migrasi idempoten/CRUD/backup, `proptest` replay acak == state asli, uji crash proses anak `abort()` di tengah tulis + `PRAGMA integrity_check`, serta uji I/O error & versi skema.
 - **M04:** Implementasikan `bot-indicators` (§6.3): indikator inkremental O(1), bebas I/O, tanpa alokasi per update (`Ema` seed SMA + warm-up `3n`, `Rsi` Wilder, `Atr` Wilder, `Adx`/`+DI`/`−DI` Wilder, `Donchian` bar sebelumnya via fixed circular monotonic deque, `SessionVwap` reset 00:00 UTC, dan `VolumeSma`) + trait `Indicator`.
 - **M04:** Tambahkan fixture referensi 650 bar (`tests/fixtures/reference_indicators.json`) dengan uji kecocokan `1e-6`, edge case warm-up, uji anti look-ahead, dan verifikasi kompleksitas O(1) atas 50.000 bar.
 - **M03:** Implementasikan `bot-marketdata` (§3.3, §4.3, §6.2): klien Spot Market Streams (`StreamPlan` ≤1024 stream, combined stream `kline`/`bookTicker`/`depth@100ms`/`!miniTicker@arr`, watchdog 1500 ms, ping/pong payload echo, reconnect backoff eksponensial + full jitter) dengan kebijakan channel `mpsc` bounded (4096) untuk kline closed dan `watch` conflation untuk book/telemetry.
