@@ -236,6 +236,14 @@ dependencies = [
 [[package]]
 name = "bot-risk"
 version = "0.1.0"
+dependencies = [
+ "bot-config",
+ "bot-types",
+ "proptest",
+ "rust_decimal",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "bot-store"

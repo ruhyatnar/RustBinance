@@ -1,8 +1,8 @@
 # STATUS
 
-**Milestone aktif:** M05 (selesai — menunggu persetujuan pemilik untuk lanjut ke M06)
+**Milestone aktif:** M06 (selesai — menunggu persetujuan pemilik untuk lanjut ke M07)
 **Mode build:** paper (tidak ada live)
-**Terakhir diperbarui:** 2026-11-22
+**Terakhir diperbarui:** 2026-11-23
 
 ## Progres
 - [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
@@ -11,7 +11,7 @@
 - [x] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
 - [x] **M04** — bot-indicators  → `docs/milestones/M04-*.md`
 - [x] **M05** — bot-store: SQLite journal/snapshot/recovery  → `docs/milestones/M05-*.md`
-- [ ] **M06** — bot-risk: gatekeeper, sizing, breakers  → `docs/milestones/M06-*.md`
+- [x] **M06** — bot-risk: gatekeeper, sizing, breakers  → `docs/milestones/M06-*.md`
 - [ ] **M07** — bot-exec + bot-engine + paper broker  → `docs/milestones/M07-*.md`
 - [ ] **M08** — bot-strategy: S1, S2, shadow S3/S4 (Long)  → `docs/milestones/M08-*.md`
 - [ ] **M09** — bot-backtest: replay & walk-forward  → `docs/milestones/M09-*.md`
@@ -28,9 +28,11 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-22 (M05):** Implementasikan `bot-store` (§8.1–§8.2, §5.1–§5.2) dengan SQLite WAL + `synchronous=FULL` + `foreign_keys=ON` (`rusqlite` 0.43.0 bundled SQLite 3.54+ menambal `RUSTSEC-2026-0459` / `CVE-2026-119375`; workspace MSRV dinaikkan ke 1.89):
-  - Migrasi bernomor idempoten `migrations/0001_init.sql` (mencakup kolom `venue`, tabel `journal`, `orders`, `fills`, `positions`, `risk_state`, `venue_state`, `snapshots`, `signals_shadow`, `counters`, `schema_migrations`).
-  - `JournalEnvelope` berversi (`EVENT_SCHEMA_VERSION = 1`, JSON dengan `Decimal` sebagai string), `PersistedEngineState` dengan replay deterministik (`recover_state()` = snapshot terakhir + journal setelah `last_seq`), API lengkap (`append_event`, `upsert_order/fill/position`, `snapshot_write/read_latest`, `risk_state_get/set`, `venue_state_get/set`, counter persisten `next_run_id`/`next_order_seq`, dan online `.backup` via `backup_to`), serta `StoreError` bertipe (`DiskFull`/`IoError`/`Corruption` → `is_fatal_storage()`).
-  - Commit M04 (`526a467`) sudah di-push ke `origin/main`; `cargo-deny` dan `cargo-nextest` terpasang; indeks `codegraph` dan `graphify` disinkronkan.
-- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 64/64 — termasuk 4 tes `bot-store`: migrasi idempoten/CRUD/counter/backup, `proptest` replay snapshot+journal acak == state asli, uji crash proses anak `std::process::abort()` di tengah transaksi + `PRAGMA integrity_check`, dan uji error I/O & versi skema; `cargo deny check` advisories/bans/licenses/sources OK; secret scan OK).
-- **Belum teruji:** Rekonsiliasi dengan exchange pasca-recovery (cakupan M07); simulasi disk penuh nyata pada filesystem terbatas (`SQLITE_FULL` dipetakan langsung ke `StoreError::DiskFull`); commit M05 baru tersimpan lokal dan belum di-`git push`.
+- **2026-11-23 (M06):** Implementasikan `bot-risk` (§7.1–§7.7, §6.5) dengan aritmetika `Decimal` murni:
+  - `Gatekeeper` (§7.2): pipeline pre-trade 9 tahap berurutan (`EngineMode::Ready`, simbol/universe/cooldown, BTC Crash Guard, kesegaran data & drift jam, batas posisi/heat/eksposur/korelasi lintas-venue, jarak stop `0.3%..=8%`, Kelly reducer + `PERCENT_PRICE_BY_SIDE` + sizing Spot + buffer fee `0.2%`, rate-limit guard `<60%`/`<50%`), update konfigurasi runtime strictly tighten-only via `bot_config::is_tightening`, serta hook `check_operational_health`.
+  - `size_spot_position` (§7.3: `FixedRiskPct` & `FixedNotional`, pembulatan ke bawah `floor_to_step`, tolak bila `< min_qty` / `< min_notional` / `> heat_max`, tidak pernah dibulatkan naik) & `ratchet_stop_monotonic`; `evaluate_kelly` (hanya pengurang, aktif ≥100 trade, auto-disable strategi bila `f <= 0`).
+  - `EngineModeMachine` (§7.4: seluruh transisi `Starting…Killed`, auto-release `Paused` ≥3 s & `ReduceOnly` ≥60 s, `Halted` harian reset 00:00 UTC, `Killed` hanya reset manual terkonfirmasi).
+  - `CombinedEquityCounters` (equity gabungan lintas venue, harian/mingguan/drawdown, profit-lock `reduce` +2% → 0.5× / `stop` +3%, loss-streak cooldown 3 rugi → 2 jam / 5 rugi → 00:00 UTC) dan `BtcCrashGuard` (§7.5 histeresis 30 mnt + ATR normal + pemulihan ≥50% / 60 mnt tanpa low baru + cooldown anti-flapping 15 mnt).
+  - Indeks `codegraph` & `graphify` disinkronkan.
+- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 72/72 — termasuk 2 unit test Kelly + 6 tes `risk_suite`: golden test §7.3 equity 1.000 → qty 2.0, `proptest` risk/heat/step/monotonic stop, tabel transisi §7.4 + latch `Killed`, skenario histeresis & anti-flapping BTC Crash Guard, serta Gatekeeper + tighten-only + equity counters; `cargo deny check` ok; secret scan ok).
+- **Belum teruji:** Risiko khusus Futures (§7.8: margin/likuidasi/funding/ADL — cakupan M15–M16); integrasi runtime ke `bot-engine` (cakupan M07); commit M06 baru tersimpan lokal dan belum di-`git push`.

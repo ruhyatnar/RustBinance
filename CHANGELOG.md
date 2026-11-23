@@ -2,6 +2,9 @@
 Format: Keep a Changelog. Setiap perubahan perilaku trading wajib tercatat.
 
 ## [Unreleased]
+- **M06:** Implementasikan `bot-risk` (§7.1–§7.7, §6.5): `Gatekeeper` pre-trade 9 tahap berurutan dengan runtime tighten-only (`bot_config::is_tightening`) & hook `check_operational_health`, sizing Spot `size_spot_position` (`FixedRiskPct`/`FixedNotional`, `floor_to_step`, portfolio heat, exposure & fee buffer 0.2%), `ratchet_stop_monotonic`, serta `evaluate_kelly` (pengurang saja ≥100 trade, auto-disable bila `f <= 0`).
+- **M06:** Implementasikan `EngineModeMachine` (§7.4: transisi `Starting…Killed`, latch `Killed` hanya reset manual terkonfirmasi), `CombinedEquityCounters` lintas-venue (harian/mingguan/drawdown, profit-lock `reduce`/`stop`, loss-streak cooldown), dan `BtcCrashGuard` (§7.5 dengan histeresis 30 mnt + anti-flapping cooldown 15 mnt).
+- **M06:** Tambahkan golden test §7.3 (equity 1.000 → qty 2.0), `proptest` risiko/heat/step/stop monoton, uji tabel mode §7.4, skenario BTC Crash Guard, serta uji Gatekeeper & tighten-only.
 - **M05:** Implementasikan `bot-store` (§8.1–§8.2, §5.1–§5.2): migrasi bernomor idempoten `0001_init.sql` (kolom `venue`, `venue_state`, `journal`, `orders`, `fills`, `positions`, `risk_state`, `snapshots`, `signals_shadow`, `counters`), SQLite WAL + `synchronous=FULL` + `foreign_keys=ON` (`rusqlite` 0.43.0 bundled SQLite 3.54+ menambal `RUSTSEC-2026-0459`; workspace MSRV → 1.89).
 - **M05:** Implementasikan `JournalEnvelope` berversi (`EVENT_SCHEMA_VERSION = 1`), `PersistedEngineState` + replay deterministik (`recover_state`), API CRUD/snapshot/counter (`next_run_id`, `next_order_seq`), backup online `.backup` (`backup_to`), dan `StoreError` bertipe (`DiskFull`/`IoError`/`Corruption`).
 - **M05:** Tambahkan tes migrasi idempoten/CRUD/backup, `proptest` replay acak == state asli, uji crash proses anak `abort()` di tengah tulis + `PRAGMA integrity_check`, serta uji I/O error & versi skema.
