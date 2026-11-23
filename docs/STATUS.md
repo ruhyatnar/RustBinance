@@ -1,13 +1,13 @@
 # STATUS
 
-**Milestone aktif:** M01 (selesai — menunggu persetujuan pemilik untuk lanjut ke M02)
+**Milestone aktif:** M02 (selesai — menunggu persetujuan pemilik untuk lanjut ke M03)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-22
 
 ## Progres
 - [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
 - [x] **M01** — bot-types & bot-config  → `docs/milestones/M01-*.md`
-- [ ] **M02** — bot-exchange Spot: REST + WS API session  → `docs/milestones/M02-*.md`
+- [x] **M02** — bot-exchange Spot: REST + WS API session  → `docs/milestones/M02-*.md`
 - [ ] **M03** — bot-marketdata: stream, kline, order book sync, universe  → `docs/milestones/M03-*.md`
 - [ ] **M04** — bot-indicators  → `docs/milestones/M04-*.md`
 - [ ] **M05** — bot-store: SQLite journal/snapshot/recovery  → `docs/milestones/M05-*.md`
@@ -28,6 +28,11 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-22 (M01):** Implementasikan seluruh tipe domain venue-agnostik `bot-types` (§3.4–§3.5) + `InstrumentRules` pembulatan/validasi `Decimal` presisi murni (`floor_to_step`, `round_to_tick`, `floor_to_tick`, `ceil_to_tick`, validasi `min_qty`/`max_qty`/`min_notional`/`TRADING`) dengan property test (`proptest`) & verifikasi filter notional Spot vs Futures di `docs/verified-facts.md`; implementasikan `bot-config` (§9 + §7.2 + §7.8) lengkap dengan `#[serde(deny_unknown_fields)]`, layering `default → bot.toml → conf.d/*.toml → BOT__*` via `figment`, validasi rentang & invarian keselamatan ketat tanpa clamp diam-diam, `is_tightening` (destructuring menyeluruh), serta `packaging/bot.toml.example`.
-- **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` 28/28 passed, `cargo deny check` ok, secret scan ok).
-- **Belum teruji:** konektivitas jaringan/testnet Binance, `VenueManager` switching runtime, persistence SQLite, maupun UI (di luar cakupan M01).
+- **2026-11-22 (M02):** Implementasikan `bot-exchange` Spot (§4.1–§4.2, §4.4, §3.5, Lampiran A):
+  - Trait venue-agnostik `ExchangeGateway` & `VenueAdapter`, DTO/event bertag `venue: Venue`, klasifikasi error Binance (`GatewayError`, `ExchangeErrorKind`, `UnknownNeedsQuery` untuk timeout/5xx, `429`/`418` `retryAfter`).
+  - Autentikasi Ed25519 PKCS#8 PEM (`ed25519-dalek` + `Secret<[u8; 32]>`) dengan canonical signing `session.logon` dan zeroization otomatis; ADR-0003 mencatat pilihan klien WS/REST kustom (`tokio-tungstenite` + `reqwest` rustls).
+  - REST `SpotRestClient` (`GET /api/v3/time` offset jam & `GET /api/v3/exchangeInfo` → `InstrumentRules` + `rateLimits`).
+  - Sesi WS API persisten `SpotWsSession`: state machine (`Disconnected → Connecting → LoggingOn → Subscribing → Ready → Draining`), peta korelasi UUID v7 `id → oneshot`, timeout 10 s, balasan `Pong` dengan salinan payload `Ping`, watchdog stale, `userDataStream.subscribe`, parser event (`executionReport`, `outboundAccountPosition`, `balanceUpdate`, `listStatus`, `eventStreamTerminated`, `serverShutdown`), rotasi ±23 jam make-before-break + dedup `(orderId, tradeId)`, reconnect backoff eksponensial 250 ms → 30 s full jitter + penghormatan `retryAfter`, dan `SpotAdapter::deactivate()` yang tidak membatalkan proteksi.
+  - Verifikasi spec WS API Spot dicatat di `docs/verified-facts.md`.
+- **Tes lulus:** `./scripts/verify.sh` hijau (`rustfmt`, `clippy -D warnings`, `cargo test --workspace` — termasuk 12 unit test + 6 mock WS/REST integration test `bot-exchange` mencakup korelasi paralel 32 request, rotasi `serverShutdown` make-before-break + dedup fill, reconnect + resubscribe, 429/418 `retryAfter`, `UnknownNeedsQuery` → `query_order`, dan uji log capture nol rahasia; secret scan ok); kompilasi & clippy `--features testnet-it` juga hijau.
+- **Belum teruji:** Tes integrasi live terhadap Binance Spot Testnet (`cargo test -p bot-exchange --features testnet-it`) membutuhkan env var kredensial testnet milik pengguna; `cargo-deny` belum terpasang di VM ini (`deny.toml` sudah diperbarui untuk lisensi permisif `ISC`/`BSD-3-Clause`/`CDLA-Permissive-2.0` dari stack `rustls`/`aws-lc-rs`/`webpki-roots`).

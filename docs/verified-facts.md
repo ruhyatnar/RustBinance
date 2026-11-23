@@ -71,3 +71,17 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Sumber: `binance-docs/SPOT_REST.yaml`, `binance-docs/FUTURES_REST.yaml` (`https://developers.binance.com/en/docs/products/spot`)
 - Diverifikasi: 2026-11-22 oleh agen
 - Dampak ke spec: tidak ada (`InstrumentRules` menormalisasi keduanya ke `min_notional: Decimal`; parser Spot di M02/M03 membaca `NOTIONAL` terlebih dahulu lalu fallback `MIN_NOTIONAL`, sedangkan parser Futures di M15 membaca field `notional`).
+
+## Spot WS API: Protokol Sesi, Ed25519, Ping/Pong, Rate Limits, dan User Data Events   (milestone: M02)
+- Fakta:
+  - **Masa berlaku koneksi & `serverShutdown`**: satu koneksi WS API berlaku maksimal **24 jam**. Sebelum server menutup koneksi, server mengirim event `serverShutdown` (10 menit sebelum putus) dengan field `E` (event time ms) dan `T` (waktu shutdown ms).
+  - **Ping/Pong**: server mengirim frame `Ping` setiap **20 detik**; jika tidak menerima `Pong` dalam **1 menit**, koneksi diputus. Saat menerima `Ping`, klien **wajib membalas `Pong` dengan salinan payload `Ping`** secepatnya. (`Pong` tak diminta / unsolicited diperbolehkan dengan payload kosong, tetapi tidak mencegah disconnect.)
+  - **Timeout request**: server memiliki timeout pemrosesan **10 detik** per request.
+  - **Penandatanganan Ed25519 (`session.logon`)**: hanya key **Ed25519** yang didukung untuk `session.logon`. Payload tanda tangan disusun dari seluruh parameter (kecuali `signature`) diurutkan alfabetis berdasarkan nama parameter (`apiKey=...&recvWindow=...&timestamp=...`), ditandatangani byte UTF-8 dengan private key Ed25519 (PKCS#8 PEM), lalu di-encode **Base64** (case-sensitive).
+  - **Rate limits & `retryAfter`**: membuka koneksi WS API memakai 2 weight. Respons membawa array `rateLimits` (`rateLimitType`: `REQUEST_WEIGHT`/`ORDERS`, `interval`, `intervalNum`, `limit`, `count`). Respons status `429` (rate limit) dan `418` (IP ban, 2 menit s/d 3 hari bertingkat) membawa `retryAfter` (timestamp ms).
+  - **Format event User Data Stream di WS API**: frame teks JSON `{"subscriptionId": <int>, "event": { ... }}` untuk `executionReport` (`s`, `c`, `S`, `o`, `f`, `q`, `p`, `P`, `g`, `C`, `x`, `X`, `r`, `i`, `l`, `z`, `L`, `n`, `N`, `T`, `t`, `m`, `Z`), `outboundAccountPosition` (`E`, `u`, `B:[{a,f,l}]`), `balanceUpdate` (`E`, `a`, `d`, `T`), `listStatus` (`E`, `s`, `g`, `c`, `l`, `L`, `r`, `C`, `T`, `O:[{s,i,c}]`), dan `eventStreamTerminated` (`E`).
+  - **Parameter `orderList.place.oco`**: `symbol`, `side`, `quantity`, `aboveType`, `belowType`, opsional `listClientOrderId`, `aboveClientOrderId`, `abovePrice`, `aboveStopPrice`, `aboveTrailingDelta`, `aboveTimeInForce`, `belowClientOrderId`, `belowPrice`, `belowStopPrice`, `belowTrailingDelta`, `belowTimeInForce`, `newOrderRespType`, `selfTradePreventionMode`.
+- Sumber: `binance-docs/SPOT_WS.yaml`, `binance-docs/SPOT_WSS.yaml`, `https://developers.binance.com/en/docs/products/spot/web-socket-api`, `https://developers.binance.com/en/docs/catalog/core-trading-spot-trading/api/ws-api/user-data-stream`
+- Diverifikasi: 2026-11-22 oleh agen
+- Dampak ke spec: catatan klarifikasi pada §4.2 butir 4 — balasan `Pong` atas `Ping` server harus menyalin payload `Ping` (bukan payload kosong; payload kosong hanya untuk unsolicited pong). Diimplementasikan sesuai dokumen resmi Binance.
+

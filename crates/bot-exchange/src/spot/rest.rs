@@ -1,0 +1,333 @@
+//! Spot REST client for clock synchronization (`GET /api/v3/time`) and `exchangeInfo` (§4.1).
+
+use std::str::FromStr;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use bot_types::{InstrumentRules, Symbol, Venue};
+use reqwest::Client;
+use rust_decimal::Decimal;
+use serde::Deserialize;
+
+use crate::error::GatewayError;
+use crate::gateway::ExchangeInfoSnapshot;
+use crate::rate_limit::RateLimitRule;
+
+/// Result of calling `GET /api/v3/time`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerTimeSync {
+    /// Server UTC epoch timestamp in milliseconds.
+    pub server_time_ms: i64,
+    /// Local UTC epoch timestamp in milliseconds (midpoint of request).
+    pub local_time_ms: i64,
+    /// Clock offset (`server_time_ms - local_time_ms`).
+    pub offset_ms: i64,
+}
+
+/// Minimal Spot REST client (used for bootstrap `time`, `exchangeInfo`, and fallback).
+#[derive(Debug, Clone)]
+pub struct SpotRestClient {
+    base_url: String,
+    http: Client,
+}
+
+impl SpotRestClient {
+    /// Production Spot REST base URL.
+    pub const PRODUCTION_URL: &'static str = "https://api.binance.com";
+    /// Testnet Spot REST base URL.
+    pub const TESTNET_URL: &'static str = "https://testnet.binance.vision";
+
+    /// Create a new Spot REST client targeting `base_url`.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError::Http`] if the underlying HTTP client fails to initialize.
+    pub fn new(base_url: impl Into<String>, timeout: Duration) -> Result<Self, GatewayError> {
+        let http = Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        Ok(Self {
+            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            http,
+        })
+    }
+
+    /// Query `GET /api/v3/time` and compute local-to-server clock offset.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure, rate limit (429/418), or malformed JSON.
+    pub async fn server_time(&self) -> Result<ServerTimeSync, GatewayError> {
+        let url = format!("{}/api/v3/time", self.base_url);
+        let t0 = now_unix_ms();
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let t1 = now_unix_ms();
+        let local_mid = t0.saturating_add(t1.saturating_sub(t0) / 2);
+
+        let body = check_rest_response(resp, local_mid).await?;
+        let parsed: RawServerTime =
+            serde_json::from_str(&body).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+
+        Ok(ServerTimeSync {
+            server_time_ms: parsed.server_time,
+            local_time_ms: local_mid,
+            offset_ms: parsed.server_time.saturating_sub(local_mid),
+        })
+    }
+
+    /// Query `GET /api/v3/exchangeInfo` and parse symbol filter rules + rate limits.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure, rate limit (429/418), or malformed payload.
+    pub async fn exchange_info(&self) -> Result<ExchangeInfoSnapshot, GatewayError> {
+        let url = format!("{}/api/v3/exchangeInfo", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let body = check_rest_response(resp, now_unix_ms()).await?;
+        parse_spot_exchange_info(&body)
+    }
+}
+
+/// Parse a Binance Spot `exchangeInfo` JSON payload into [`ExchangeInfoSnapshot`].
+///
+/// Reads `PRICE_FILTER`, `LOT_SIZE`, and `NOTIONAL` (falling back to `MIN_NOTIONAL` per
+/// `docs/verified-facts.md`). Symbols missing mandatory filters are skipped cleanly.
+///
+/// # Errors
+/// Returns [`GatewayError::WireFormat`] if the JSON structure is invalid.
+pub fn parse_spot_exchange_info(json_str: &str) -> Result<ExchangeInfoSnapshot, GatewayError> {
+    let raw: RawExchangeInfo =
+        serde_json::from_str(json_str).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+
+    let mut rules = Vec::with_capacity(raw.symbols.len());
+    for sym in raw.symbols {
+        if let Some(parsed) = parse_symbol_rules(sym) {
+            rules.push(parsed);
+        }
+    }
+
+    Ok(ExchangeInfoSnapshot {
+        venue: Venue::Spot,
+        server_time_ms: raw.server_time,
+        rules,
+        rate_limits: raw.rate_limits,
+    })
+}
+
+fn parse_symbol_rules(sym: RawSymbol) -> Option<InstrumentRules> {
+    let mut tick_size: Option<Decimal> = None;
+    let mut step_size: Option<Decimal> = None;
+    let mut min_qty: Option<Decimal> = None;
+    let mut max_qty: Option<Decimal> = None;
+    let mut notional_primary: Option<Decimal> = None;
+    let mut notional_legacy: Option<Decimal> = None;
+
+    for filter in sym.filters {
+        match filter.filter_type.as_str() {
+            "PRICE_FILTER" => {
+                tick_size = filter.tick_size.as_deref().and_then(parse_dec);
+            }
+            "LOT_SIZE" => {
+                step_size = filter.step_size.as_deref().and_then(parse_dec);
+                min_qty = filter.min_qty.as_deref().and_then(parse_dec);
+                max_qty = filter.max_qty.as_deref().and_then(parse_dec);
+            }
+            "NOTIONAL" => {
+                notional_primary = filter.min_notional.as_deref().and_then(parse_dec);
+            }
+            "MIN_NOTIONAL" => {
+                notional_legacy = filter.min_notional.as_deref().and_then(parse_dec);
+            }
+            _ => {}
+        }
+    }
+
+    let rules = InstrumentRules {
+        venue: Venue::Spot,
+        symbol: Symbol(sym.symbol),
+        tick_size: tick_size?,
+        step_size: step_size?,
+        min_qty: min_qty?,
+        max_qty: max_qty?,
+        min_notional: notional_primary
+            .or(notional_legacy)
+            .unwrap_or(Decimal::ZERO),
+        status_trading: sym.status == "TRADING",
+        base_precision: sym.base_asset_precision,
+        quote_precision: sym.quote_asset_precision,
+    };
+
+    if rules.validate_rules().is_ok() {
+        Some(rules)
+    } else {
+        None
+    }
+}
+
+fn parse_dec(s: &str) -> Option<Decimal> {
+    Decimal::from_str(s).ok()
+}
+
+async fn check_rest_response(resp: reqwest::Response, now_ms: i64) -> Result<String, GatewayError> {
+    let status = resp.status().as_u16();
+    let retry_after_ms = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)));
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| GatewayError::Http(e.to_string()))?;
+
+    if (200..300).contains(&status) {
+        return Ok(body);
+    }
+
+    let (code, msg) =
+        serde_json::from_str::<RawRestError>(&body).map_or((None, body), |e| (Some(e.code), e.msg));
+
+    Err(GatewayError::from_exchange_error(
+        status,
+        code,
+        msg,
+        retry_after_ms,
+        None,
+    ))
+}
+
+/// Current UTC Unix timestamp in milliseconds.
+#[must_use]
+pub fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawServerTime {
+    server_time: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRestError {
+    code: i64,
+    msg: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawExchangeInfo {
+    server_time: i64,
+    #[serde(default)]
+    rate_limits: Vec<RateLimitRule>,
+    #[serde(default)]
+    symbols: Vec<RawSymbol>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSymbol {
+    symbol: String,
+    status: String,
+    base_asset_precision: u32,
+    quote_asset_precision: u32,
+    #[serde(default)]
+    filters: Vec<RawFilter>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawFilter {
+    filter_type: String,
+    tick_size: Option<String>,
+    step_size: Option<String>,
+    min_qty: Option<String>,
+    max_qty: Option<String>,
+    min_notional: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use bot_types::Venue;
+    use rust_decimal::Decimal;
+
+    use super::parse_spot_exchange_info;
+    use crate::rate_limit::{RateLimitInterval, RateLimitType};
+
+    #[test]
+    fn parses_spot_exchange_info_with_notional_and_legacy_fallback() {
+        let golden = r#"{
+            "timezone": "UTC",
+            "serverTime": 1770736694138,
+            "rateLimits": [
+                { "rateLimitType": "REQUEST_WEIGHT", "interval": "MINUTE", "intervalNum": 1, "limit": 6000 },
+                { "rateLimitType": "ORDERS", "interval": "SECOND", "intervalNum": 10, "limit": 100 }
+            ],
+            "symbols": [
+                {
+                    "symbol": "BTCUSDT",
+                    "status": "TRADING",
+                    "baseAssetPrecision": 8,
+                    "quoteAssetPrecision": 8,
+                    "filters": [
+                        { "filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "1000000.00", "tickSize": "0.01" },
+                        { "filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000.00", "stepSize": "0.00001" },
+                        { "filterType": "NOTIONAL", "minNotional": "5.00000000", "applyMinToMarket": true }
+                    ]
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "status": "BREAK",
+                    "baseAssetPrecision": 8,
+                    "quoteAssetPrecision": 8,
+                    "filters": [
+                        { "filterType": "PRICE_FILTER", "tickSize": "0.01" },
+                        { "filterType": "LOT_SIZE", "minQty": "0.0001", "maxQty": "1000.0", "stepSize": "0.0001" },
+                        { "filterType": "MIN_NOTIONAL", "minNotional": "10.0" }
+                    ]
+                }
+            ]
+        }"#;
+
+        let snap = parse_spot_exchange_info(golden).expect("parse golden exchangeInfo");
+        assert_eq!(snap.venue, Venue::Spot);
+        assert_eq!(snap.server_time_ms, 1_770_736_694_138);
+        assert_eq!(snap.rate_limits.len(), 2);
+        assert_eq!(
+            snap.rate_limits[0].rate_limit_type,
+            RateLimitType::RequestWeight
+        );
+        assert_eq!(snap.rate_limits[1].interval, RateLimitInterval::Second);
+
+        assert_eq!(snap.rules.len(), 2);
+        let btc = &snap.rules[0];
+        assert_eq!(btc.symbol.as_str(), "BTCUSDT");
+        assert!(btc.status_trading);
+        assert_eq!(btc.tick_size, Decimal::from_str("0.01").expect("dec"));
+        assert_eq!(btc.step_size, Decimal::from_str("0.00001").expect("dec"));
+        assert_eq!(
+            btc.min_notional,
+            Decimal::from_str("5.00000000").expect("dec")
+        );
+
+        let eth = &snap.rules[1];
+        assert_eq!(eth.symbol.as_str(), "ETHUSDT");
+        assert!(!eth.status_trading);
+        assert_eq!(eth.min_notional, Decimal::from_str("10.0").expect("dec"));
+    }
+}
