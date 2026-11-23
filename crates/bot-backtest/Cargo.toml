@@ -7,3 +7,22 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bot-config = { path = "../bot-config", version = "0.1.0" }
+bot-engine = { path = "../bot-engine", version = "0.1.0" }
+bot-exchange = { path = "../bot-exchange", version = "0.1.0" }
+bot-exec = { path = "../bot-exec", version = "0.1.0" }
+bot-marketdata = { path = "../bot-marketdata", version = "0.1.0" }
+bot-risk = { path = "../bot-risk", version = "0.1.0" }
+bot-store = { path = "../bot-store", version = "0.1.0" }
+bot-strategy = { path = "../bot-strategy", version = "0.1.0" }
+bot-types = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -134,5 +134,16 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Diverifikasi: 2026-11-23 oleh agen
 - Dampak ke spec: tidak ada (sesuai §6.1 & §6.5).
 
-
-
+## Sumber & Format Data Historis Publik Binance (`data.binance.vision` & `/api/v3/klines`)   (milestone: M09)
+- Fakta:
+  - **Sumber resmi arsip publik**: `https://data.binance.vision` (dokumentasi resmi: `https://github.com/binance/binance-public-data`, dirujuk langsung oleh `binance-docs/SPOT_WS.yaml` `/klines`) serta endpoint REST `GET /api/v3/klines` (Spot) dan `GET /fapi/v1/klines` (USDⓈ-M Futures, `limit` maks 1000).
+  - **Pola URL `data.binance.vision`**:
+    - Spot bulanan/harian: `https://data.binance.vision/data/spot/{monthly|daily}/klines/{SYMBOL}/{INTERVAL}/{SYMBOL}-{INTERVAL}-{YYYY-MM|YYYY-MM-DD}.zip` (+ file `.zip.CHECKSUM` berisi SHA-256).
+    - USDⓈ-M Futures bulanan/harian: `https://data.binance.vision/data/futures/um/{monthly|daily}/klines/{SYMBOL}/{INTERVAL}/{SYMBOL}-{INTERVAL}-{YYYY-MM|YYYY-MM-DD}.zip` (+ `.zip.CHECKSUM`).
+    - Interval didukung: `1s`, `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d`, `1w`, `1mo` (REST memakai `1M` untuk bulanan).
+  - **Skema 12 kolom CSV / array JSON `/klines`**:
+    `[0] open_time`, `[1] open`, `[2] high`, `[3] low`, `[4] close`, `[5] volume` (base), `[6] close_time`, `[7] quote_asset_volume`, `[8] number_of_trades`, `[9] taker_buy_base_asset_volume`, `[10] taker_buy_quote_asset_volume`, `[11] ignore`.
+  - **Presisi timestamp Spot vs Futures & perubahan 2025**: Arsip Spot dari Januari 2025 ke atas memakai timestamp **mikrodetik** (16 digit, $\ge 10^{15}$), sedangkan arsip pra-2025 dan REST `/api/v3/klines` memakai **milidetik** (13 digit, $\approx 1.7 \times 10^{12}$). Arsip CSV Futures terkadang menyertakan baris header teks (`open_time,open,...`). Parser CSV wajib mendeteksi/melewati baris header opsional dan menormalisasi timestamp mikrodetik ($\ge 10^{15}$) ke milidetik (`ts / 1000`).
+- Sumber: `binance-docs/SPOT_REST.yaml` (`/api/v3/klines`), `binance-docs/SPOT_WS.yaml` (`/klines`), `https://github.com/binance/binance-public-data`
+- Diverifikasi: 2026-11-23 oleh agen
+- Dampak ke spec: tidak ada (sesuai §13.2; parser CSV `bot-backtest` menormalisasi timestamp ms/µs dan mendukung header opsional).

@@ -151,6 +151,23 @@ dependencies = [
 [[package]]
 name = "bot-backtest"
 version = "0.1.0"
+dependencies = [
+ "bot-config",
+ "bot-engine",
+ "bot-exchange",
+ "bot-exec",
+ "bot-marketdata",
+ "bot-risk",
+ "bot-store",
+ "bot-strategy",
+ "bot-types",
+ "proptest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "bot-config"
