@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Binance Trading Bot
+GenericName=Crypto Trading Bot Monitor
+Comment=Desktop monitor & control client for binance-botd (Spot / USD-M Futures)
+Exec=/usr/local/bin/binance-bot-ui
+Icon=office-chart-line
+Terminal=false
+Categories=Finance;Utility;Qt;KDE;
+StartupNotify=true
+SingleMainWindow=true

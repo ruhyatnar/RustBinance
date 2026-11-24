@@ -554,9 +554,23 @@ name = "botd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bot-config",
+ "bot-engine",
+ "bot-exchange",
+ "bot-exec",
+ "bot-ipc",
+ "bot-marketdata",
+ "bot-risk",
+ "bot-store",
+ "bot-types",
+ "rust_decimal",
  "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

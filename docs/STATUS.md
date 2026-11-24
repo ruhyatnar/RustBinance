@@ -1,8 +1,8 @@
 # STATUS
 
-**Milestone aktif:** M12 (selesai — menunggu persetujuan pemilik untuk lanjut ke M13)
+**Milestone aktif:** M13 (selesai — menunggu persetujuan pemilik untuk lanjut ke M14)
 **Mode build:** paper (tidak ada live)
-**Terakhir diperbarui:** 2026-11-23
+**Terakhir diperbarui:** 2026-11-24
 
 ## Progres
 - [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
@@ -18,7 +18,7 @@
 - [x] **M10** — bot-ipc + botctl  → `docs/milestones/M10-*.md`
 - [x] **M11** — web-ui  → `docs/milestones/M11-*.md`
 - [x] **M12** — desktop-ui (Qt6/Plasma 6)  → `docs/milestones/M12-*.md`
-- [ ] **M13** — Packaging, installer, systemd, chaos suite  → `docs/milestones/M13-*.md`
+- [x] **M13** — Packaging, installer, systemd, chaos suite  → `docs/milestones/M13-*.md`
 - [ ] **M14** — OPERASIONAL: gerbang Spot G2→G5  → `docs/milestones/M14-*.md`
 - [ ] **M15** — FuturesAdapter  → `docs/milestones/M15-*.md`
 - [ ] **M16** — VenueManager & peralihan Spot ⇄ Futures, Short  → `docs/milestones/M16-*.md`
@@ -28,9 +28,8 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-23 (M12):** Implementasikan `desktop-ui` (`binance-bot-ui`, C++20 + Qt6/QML + integrasi opsional KF6 Plasma 6, `ADR-0004`) serta perluasan kontrak UDS/WS IPC v1 (§11.1–§11.4, §10.2, §12.2):
-  - `bot-ipc` & `protocol/ipc-v1.schema.json`: tambahkan envelope venue-aware `get_klines` / `klines` (`KlineBar`) dan `get_trades` / `trades` (`TradeRecord`) di UDS & WS (+ fixture `klines.json` & `trades.json`, sinkronisasi `web-ui/src/lib/api/types.ts`, dan contoh daemon `crates/bot-ipc/examples/mock_uds_daemon.rs`).
-  - `desktop-ui/src/`: `DecimalFormat` murni berbasis string tanpa `double` untuk teks presisi, `StateStore` + 7 `QAbstractListModel` (`PositionsModel`, `OrdersModel`, `SignalsModel`, `MarketTicksModel`, `EventsModel`, `AlertsModel`, `TradesModel`) dengan deduplikasi notifikasi alert, `IpcClient` (`QLocalSocket` NDJSON, auto-discovery socket aman tanpa `/tmp` implisit + verifikasi `SO_PEERCRED` peer UID/GID, deteksi gap `seq` → `request_snapshot`, backoff eksponensial), `CommandService` (`QUuid::WithoutBraces`, mode *View-Only* terkunci default + `Unlock Controls`, alur 1 gerakan tahan 1,5 detik `request_confirm` → `panic_flatten` / `reset_kill`), serta `Notifier` (`KStatusNotifierItem` + `KNotification` saat `HAVE_KF6=1`, fallback `QSystemTrayIcon`, ikon terprogram per mode, close-to-tray, nol `PANIC` di menu tray).
-  - `desktop-ui/qml/` & `scripts/deps-arch.sh`: singleton `Theme.qml` adaptif Breeze terang/gelap (`SystemPalette` + `qqc2-desktop-style`), `ModeBanner`, `HoldToConfirmButton` (blokir pintasan 1 tombol), `RiskGauge`, `DepthLadder`, `EventList`, `CandlesChart` (`Canvas` 2D + garis `entry`/`SL`/`TP1`/`TP2`), serta 9 layar (`Cockpit`, `Positions`, `Signals`, `Market`, `Risk`, `Performance`, `Logs`, `Settings` tighten-only tanpa angka hardcode, `System`).
-  - **Tes lulus:** `./scripts/verify.sh` hijau penuh di Ubuntu 24.04 (`Qt 6.4.2`, `HAVE_KF6=0`) **dan** build `-DBOT_REQUIRE_KF6=ON` + CTest hijau penuh di container Arch Linux (`Qt 6.12.0`, `GCC 16.2.1`, `KF6StatusNotifierItem`/`KF6Notifications`/`KF6I18n` aktif, **3/3** suite CTest `tst_decimal_and_store`, `tst_ipc_uds_integration` terhadap daemon Rust nyata + restart reconnect, dan `tst_qml_smoke` 9 layar 0 warning).
-  - **Belum teruji:** Uji klik interaktif ikon tray Wayland pada desktop fisik CachyOS Plasma 6, penyatuan daemon penuh `binance-botd` + `systemd` (M13), dan `VenueSwitcher` Spot ⇄ Futures (M16); commit belum di-`git push`.
+- **2026-11-24 (M13):** Implementasikan packaging CachyOS/Arch (Opsi A tanpa `PKGBUILD`), daemon `binance-botd` penuh, hardening `systemd`, dan chaos suite Spot §13.4:
+  - `packaging/binance-botd.service` (§12.4 + hardening tambahan: `systemd-analyze security --offline=true` → **`1.3 OK :-)`**, dicatat di `docs/verified-facts.md`), `packaging/binance-trading-bot.desktop`, `scripts/build.sh` (non-root), `scripts/install-system.sh` (root, izin ketat §12.1, keypair Ed25519 terpisah per venue, **tidak** auto-enable), dan `README.md`.
+  - `crates/botd`: implementasikan `sd_notify` + watchdog (`READY=1`, `WATCHDOG=1`, `STOPPING=1`) tanpa `unsafe`, CLI `--config`, guard Aturan Keras #2 (`mode=live` ditolak tanpa `live_confirmation_file`), bootstrap `SqliteStore` + `EngineActor` + `PaperBroker` + `bot-ipc` UDS server, serta handler `SIGTERM`/`SIGINT` yang hanya membatalkan order entry pending (proteksi OCO dipertahankan).
+  - `crates/botd/tests/chaos_spot.rs` & `docs/gates/spot/chaos.md`: **13/13** tes lulus (seluruh 12 skenario Spot §13.4 + E2E `binance-botd` `NOTIFY_SOCKET` & `SIGTERM`).
+  - **Belum teruji:** Eksekusi `sudo ./scripts/install-system.sh` & uji `iptables` drop paket nyata pada host CachyOS fisik (dijalankan bersama gerbang G2 Testnet di M14); commit belum di-`git push`.

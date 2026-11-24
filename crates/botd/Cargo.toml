@@ -14,8 +14,22 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bot-config = { path = "../bot-config", version = "0.1.0" }
+bot-engine = { path = "../bot-engine", version = "0.1.0" }
+bot-exchange = { path = "../bot-exchange", version = "0.1.0" }
+bot-exec = { path = "../bot-exec", version = "0.1.0" }
+bot-ipc = { path = "../bot-ipc", version = "0.1.0" }
+bot-store = { path = "../bot-store", version = "0.1.0" }
+bot-types = { workspace = true }
+rust_decimal = { workspace = true }
+time = { workspace = true }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "net"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+bot-marketdata = { path = "../bot-marketdata", version = "0.1.0" }
+bot-risk = { path = "../bot-risk", version = "0.1.0" }
 serde_json.workspace = true
+tempfile.workspace = true
+uuid.workspace = true

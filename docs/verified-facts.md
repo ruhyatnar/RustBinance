@@ -164,3 +164,16 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Sumber: Verifikasi build CMake `-DBOT_REQUIRE_KF6=ON` pada container `archlinux:latest`
 - Diverifikasi: 2026-11-23 oleh agen
 - Dampak ke spec: tercermin pada `desktop-ui/CMakeLists.txt` (tetap kompatibel dengan daftar paket `scripts/deps-arch.sh` di §12.2).
+
+## Hardening `systemd` untuk Runtime Rust/Tokio/SQLite (`systemd-analyze security`)   (milestone: M13)
+- Fakta:
+  - Binary Rust (`binance-botd`) yang memakai `tokio`, `rustls`, `ed25519-dalek`, dan `rusqlite` (SQLite bundled) tidak memerlukan JIT/kode `W+X`, sehingga **`MemoryDenyWriteExecute=yes`** kompatibel penuh.
+  - **`SystemCallFilter=@system-service`** ditambah **`SystemCallFilter=~@privileged @resources`** dan **`SystemCallArchitectures=native`** kompatibel dengan syscall `epoll`/`futex`/`socket`/`fsync` yang dipakai Tokio + SQLite WAL.
+  - **`ProcSubset=pid`** + **`ProtectProc=invisible`** kompatibel karena `bot-ipc` hanya membaca `/proc/self/status` (EUID/EGID proses sendiri).
+  - **`PrivateUsers=yes`** sengaja tidak diaktifkan agar `SO_PEERCRED` UDS dapat mencocokkan UID/GID user desktop pada grup `binancebot` secara akurat.
+  - **`UMask=0007`** dipertahankan sesuai §12.4 agar socket `/run/binance-bot/bot.sock` (`0660`) dapat diakses oleh grup `binancebot` (`desktop-ui` / `botctl`).
+  - Hasil `systemd-analyze security --offline=true packaging/binance-botd.service` (systemd 255): **Overall exposure level `1.3 OK :-)`**.
+- Sumber: `systemd.exec(5)` & eksekusi langsung `systemd-analyze security --offline=true packaging/binance-botd.service`
+- Diverifikasi: 2026-11-24 oleh agen
+- Dampak ke spec: diterapkan pada `packaging/binance-botd.service` (memenuhi §12.4 dengan skor eksposur `1.3 OK`).
+
