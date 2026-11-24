@@ -5,8 +5,10 @@
 pub mod client_id;
 pub mod entry;
 pub mod fsm;
+pub mod futures_protection;
 pub mod lifecycle;
 pub mod paper;
+pub mod paper_futures;
 pub mod protection;
 pub mod reconcile;
 
