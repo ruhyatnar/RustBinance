@@ -28,8 +28,11 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-24 (M13):** Implementasikan packaging CachyOS/Arch (Opsi A tanpa `PKGBUILD`), daemon `binance-botd` penuh, hardening `systemd`, dan chaos suite Spot §13.4:
-  - `packaging/binance-botd.service` (§12.4 + hardening tambahan: `systemd-analyze security --offline=true` → **`1.3 OK :-)`**, dicatat di `docs/verified-facts.md`), `packaging/binance-trading-bot.desktop`, `scripts/build.sh` (non-root), `scripts/install-system.sh` (root, izin ketat §12.1, keypair Ed25519 terpisah per venue, **tidak** auto-enable), dan `README.md`.
-  - `crates/botd`: implementasikan `sd_notify` + watchdog (`READY=1`, `WATCHDOG=1`, `STOPPING=1`) tanpa `unsafe`, CLI `--config`, guard Aturan Keras #2 (`mode=live` ditolak tanpa `live_confirmation_file`), bootstrap `SqliteStore` + `EngineActor` + `PaperBroker` + `bot-ipc` UDS server, serta handler `SIGTERM`/`SIGINT` yang hanya membatalkan order entry pending (proteksi OCO dipertahankan).
-  - `crates/botd/tests/chaos_spot.rs` & `docs/gates/spot/chaos.md`: **13/13** tes lulus (seluruh 12 skenario Spot §13.4 + E2E `binance-botd` `NOTIFY_SOCKET` & `SIGTERM`).
-  - **Belum teruji:** Eksekusi `sudo ./scripts/install-system.sh` & uji `iptables` drop paket nyata pada host CachyOS fisik (dijalankan bersama gerbang G2 Testnet di M14); commit belum di-`git push`.
+- **2026-11-24 (Perbaikan Audit Pra-M16):** Menutup seluruh temuan Must Fix (#1–#3) & Should Fix (#4–#6):
+  - `crates/bot-ipc`: `PeerAuthPolicy::is_allowed_with_groups` memeriksa *supplementary groups* klien via `/proc/<pid>/status` (nol `unsafe`).
+  - `crates/botd`: `EngineIpcBackend` + `spawn_telemetry_bridge` menghubungkan `CommandDispatcher` dan `TelemetryHub` langsung ke `EngineHandle` & `watch::Receiver<TelemetrySnapshot>`; `botd` memuat sibling `conf.d/` dan menolak mode non-`paper` hingga M16 (`VenueManager`) terpasang.
+  - `crates/bot-exchange`: `FuturesAdapter::with_transport` kini memakai `FuturesWsSession` (`/ws-fapi/v1`, per-request Ed25519 signing) sebagai jalur utama dan `FuturesRestClient` (`/fapi/v1`) untuk `exchangeInfo`, validasi akun nyata saat `activate()`, serta fallback otomatis saat WS terputus (teruji via mock WS/HTTP di `tests/futures_transport.rs`).
+  - Hygiene: menghapus duplikat direktori `binance-bot-agent-kit/` dan memperbarui `docs/STATUS.md` + `CHANGELOG.md`.
+- **2026-11-24 (M15):** Implementasi `FuturesAdapter` (`bot-exchange`), Futures markPrice@1s + `pu` depth sync (`bot-marketdata`), Futures funding/liquidation/mark-last risk guard (`bot-risk`), dan `AlgoProtectionManager` (make-before-break) + `PaperFuturesBroker` (`bot-exec`).
+- **2026-11-24 (M14):** Tooling gerbang Spot G1–G5 & laporan markdown (`ADR-0005`); eksekusi operasional testnet G2–G5 pending sebelum live.
+- **2026-11-24 (M13):** Implementasikan packaging CachyOS/Arch (Opsi A tanpa `PKGBUILD`), daemon `binance-botd` penuh, hardening `systemd`, dan chaos suite Spot §13.4 (`13/13` tes lulus).
