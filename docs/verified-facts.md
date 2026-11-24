@@ -147,3 +147,12 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Sumber: `binance-docs/SPOT_REST.yaml` (`/api/v3/klines`), `binance-docs/SPOT_WS.yaml` (`/klines`), `https://github.com/binance/binance-public-data`
 - Diverifikasi: 2026-11-23 oleh agen
 - Dampak ke spec: tidak ada (sesuai §13.2; parser CSV `bot-backtest` menormalisasi timestamp ms/µs dan mendukung header opsional).
+
+## Kompatibilitas CMake Qt 6.4 vs Qt 6.12 & Styling Breeze `qqc2-desktop-style`   (milestone: M12)
+- Fakta:
+  - Pada CachyOS/Arch (Plasma 6), agar komponen standar `QtQuick.Controls` mewarisi tema Breeze terang/gelap secara otomatis tanpa `import org.kde.kirigami`, paket Arch **`qqc2-desktop-style`** diperlukan bersama `breeze`.
+  - Baik `KStatusNotifierItem::setContextMenu(QMenu*)` (KF6) maupun `QSystemTrayIcon` (Qt6) membutuhkan `QMenu` dari `Qt6::Widgets` dan instansiasi `QApplication` (memakai `QGuiApplication` memicu abort fatal saat membuat widget menu).
+  - Pada Ubuntu 24.04 LTS (`ci.yml`), versi Qt yang tersedia adalah **Qt 6.4.2** (tanpa `QQmlApplicationEngine::loadFromModule` dan tanpa policy `QTP0001` yang baru hadir di Qt 6.5) serta belum tersedia paket KF6 di `apt`. Menetapkan `RESOURCE_PREFIX /qt/qml` pada `qt_add_qml_module` dan memuat `qrc:/qt/qml/BinanceBot/qml/Main.qml` bekerja identik pada Qt 6.4.2 maupun Qt 6.12+.
+- Sumber: Dokumentasi resmi Qt 6 CMake (`qt_add_qml_module`), KDE Frameworks 6 (`KStatusNotifierItem`, `KNotification`), verifikasi `apt-cache` Ubuntu 24.04 & paket Arch Linux
+- Diverifikasi: 2026-11-23 oleh agen
+- Dampak ke spec: ditambahkan `qqc2-desktop-style` pada `scripts/deps-arch.sh` dan dicatat pada `docs/decisions/0004-desktop-ui-qt6-optional-kf6.md`.

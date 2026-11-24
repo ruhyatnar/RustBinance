@@ -19,3 +19,4 @@ keys/
 # Local code index / graph caches
 .codegraph/
 graphify-out/
+.superpowers/
