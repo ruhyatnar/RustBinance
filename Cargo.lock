@@ -347,6 +347,7 @@ dependencies = [
 name = "bot-engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bot-config",
  "bot-exchange",
  "bot-exec",
@@ -493,7 +494,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time",
- "tracing",
  "uuid",
 ]
 

@@ -903,7 +903,7 @@ impl EngineActor {
                             self.state.apply_event(seq, &bp_env);
                         }
                     }
-                    let _ = self
+                    match self
                         .oco_mgr
                         .replace_runner_stop(
                             self.adapter.as_ref(),
@@ -916,15 +916,27 @@ impl EngineActor {
                             self.run_id,
                             tick.now_ms,
                         )
-                        .await;
-                    let stop_env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
-                        venue: pos.venue,
-                        position_id: pos.id,
-                        new_stop_price: new_stop,
-                        breakeven_done: is_breakeven,
-                    });
-                    if let Ok(seq) = self.store.append_event(tick.now_ms, &stop_env) {
-                        self.state.apply_event(seq, &stop_env);
+                        .await
+                    {
+                        Ok(_) => {
+                            let stop_env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
+                                venue: pos.venue,
+                                position_id: pos.id,
+                                new_stop_price: new_stop,
+                                breakeven_done: is_breakeven,
+                            });
+                            let next_seq = self.state.last_seq.saturating_add(1);
+                            self.state.apply_event(next_seq, &stop_env);
+                        }
+                        Err(err) => {
+                            warn!(
+                                position_id = %pos.id,
+                                error = %err,
+                                "replace_runner_stop failed; keeping local stop unchanged"
+                            );
+                            self.oco_mgr
+                                .record_reinstall_failure(pos_id, pos.stop_price);
+                        }
                     }
                 }
                 LifecycleAction::ReinstallProtection => {
@@ -942,9 +954,9 @@ impl EngineActor {
                         )
                         .await
                         .is_err()
-                        && let Some(p) = self.oco_mgr.get_mut(pos_id)
                     {
-                        p.reinstall_failures = p.reinstall_failures.saturating_add(1);
+                        self.oco_mgr
+                            .record_reinstall_failure(pos_id, pos.stop_price);
                     }
                 }
                 LifecycleAction::EmergencyMarketExit { reason } => {
@@ -980,16 +992,15 @@ impl EngineActor {
                 }
             }
         }
-        if let Ok(seq) = self.store.next_order_seq()
+        let placed = if let Ok(seq) = self.store.next_order_seq()
             && let Ok(cid) = format_client_order_id(
                 &self.bot_id,
                 self.run_id,
                 pos.venue,
                 seq,
                 OrderPurpose::EmergencyExit,
-            )
-        {
-            let _ = self
+            ) {
+            match self
                 .adapter
                 .place_order(PlaceOrderRequest {
                     symbol: pos.symbol.clone(),
@@ -1002,8 +1013,41 @@ impl EngineActor {
                     stop_price: None,
                     time_in_force: None,
                 })
-                .await;
+                .await
+            {
+                Ok(_) => true,
+                Err(err) => {
+                    warn!(
+                        position_id = %pos.id,
+                        reason = %reason,
+                        error = %err,
+                        "emergency market exit order failed; keeping position open for retry"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        if !placed {
+            if pos.state != PositionState::OpenUnprotected {
+                let unprot_env = JournalEnvelope::new(JournalEvent::PositionStateChanged {
+                    venue: pos.venue,
+                    position_id: pos.id,
+                    state: PositionState::OpenUnprotected,
+                    qty_open: pos.qty_open,
+                    realized_pnl_quote: pos.realized_pnl_quote,
+                    fees_paid_quote: pos.fees_paid_quote,
+                    close_reason: None,
+                });
+                if let Ok(seq) = self.store.append_event(now_ms, &unprot_env) {
+                    self.state.apply_event(seq, &unprot_env);
+                }
+            }
+            return;
         }
+
         let close_env = JournalEnvelope::new(JournalEvent::PositionStateChanged {
             venue: pos.venue,
             position_id: pos.id,

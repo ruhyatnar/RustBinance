@@ -596,3 +596,252 @@ async fn reconciler_handles_orphan_orders_and_balances_per_orphan_policy() {
     assert_eq!(state2.positions.len(), 1);
     assert!(broker_adopt.active_oco_count() >= 1);
 }
+
+mod audit_regression_tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use bot_config::OrphanPolicy;
+    use bot_exchange::{
+        AccountSnapshot, CancelOrderAck, CancelOrderListAck, CancelOrderListRequest,
+        CancelOrderRequest, CancelReplaceAck, CancelReplaceRequest, ExchangeGateway,
+        ExchangeInfoSnapshot, GatewayError, OcoOrderAck, OrderAck, OrderSnapshot, PlaceOcoRequest,
+        PlaceOrderRequest, QueryOrderRequest,
+    };
+    use bot_exec::{
+        DualOcoManager, OrderFsm, PaperBroker, PaperBrokerConfig, ReconcileConfig, reconcile_venue,
+    };
+    use bot_store::{PersistedEngineState, SqliteStore};
+    use bot_types::{OrderKind, Price, Symbol, Venue};
+    use rust_decimal::Decimal;
+    use uuid::Uuid;
+
+    use super::{make_position, sample_rules};
+
+    struct FaultyGateway {
+        inner: PaperBroker,
+        fail_oco_after: AtomicUsize,
+        oco_calls: AtomicUsize,
+        fail_cancel_order: AtomicBool,
+    }
+
+    impl FaultyGateway {
+        fn new(inner: PaperBroker) -> Self {
+            Self {
+                inner,
+                fail_oco_after: AtomicUsize::new(usize::MAX),
+                oco_calls: AtomicUsize::new(0),
+                fail_cancel_order: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ExchangeGateway for FaultyGateway {
+        async fn place_order(&self, req: PlaceOrderRequest) -> Result<OrderAck, GatewayError> {
+            self.inner.place_order(req).await
+        }
+
+        async fn cancel_order(
+            &self,
+            req: CancelOrderRequest,
+        ) -> Result<CancelOrderAck, GatewayError> {
+            if self.fail_cancel_order.load(Ordering::SeqCst) {
+                return Err(GatewayError::Transport(
+                    "injected cancel_order failure".into(),
+                ));
+            }
+            self.inner.cancel_order(req).await
+        }
+
+        async fn cancel_replace(
+            &self,
+            req: CancelReplaceRequest,
+        ) -> Result<CancelReplaceAck, GatewayError> {
+            self.inner.cancel_replace(req).await
+        }
+
+        async fn place_oco(&self, req: PlaceOcoRequest) -> Result<OcoOrderAck, GatewayError> {
+            let n = self.oco_calls.fetch_add(1, Ordering::SeqCst);
+            if n >= self.fail_oco_after.load(Ordering::SeqCst) {
+                return Err(GatewayError::Transport("injected place_oco failure".into()));
+            }
+            self.inner.place_oco(req).await
+        }
+
+        async fn cancel_list(
+            &self,
+            req: CancelOrderListRequest,
+        ) -> Result<CancelOrderListAck, GatewayError> {
+            self.inner.cancel_list(req).await
+        }
+
+        async fn query_order(&self, req: QueryOrderRequest) -> Result<OrderSnapshot, GatewayError> {
+            self.inner.query_order(req).await
+        }
+
+        async fn open_orders(
+            &self,
+            symbol: Option<&Symbol>,
+        ) -> Result<Vec<OrderSnapshot>, GatewayError> {
+            self.inner.open_orders(symbol).await
+        }
+
+        async fn account_snapshot(&self) -> Result<AccountSnapshot, GatewayError> {
+            self.inner.account_snapshot().await
+        }
+
+        async fn exchange_info(&self) -> Result<ExchangeInfoSnapshot, GatewayError> {
+            self.inner.exchange_info().await
+        }
+    }
+
+    #[tokio::test]
+    async fn install_dual_oco_tracks_oco_a_if_oco_b_fails() {
+        let rules = sample_rules();
+        let broker = PaperBroker::new(PaperBrokerConfig {
+            rules: vec![rules.clone()],
+            ..PaperBrokerConfig::default()
+        });
+        broker.inject_orphan_balance("BTC", Decimal::from(2_u32));
+        let gw = FaultyGateway::new(broker);
+        // Allow OCO-A (call 0), fail OCO-B (call 1).
+        gw.fail_oco_after.store(1, Ordering::SeqCst);
+
+        let mut store = SqliteStore::open_in_memory().expect("store");
+        let mut mgr = DualOcoManager::new();
+        let pos = make_position(Uuid::now_v7(), 100, 95, 105, 110, 2);
+
+        let err = mgr
+            .install_dual_oco(
+                &gw,
+                &mut store,
+                &pos,
+                &rules,
+                Decimal::new(5, 1),
+                "b01",
+                1,
+                1_000,
+            )
+            .await;
+        assert!(err.is_err(), "OCO-B failure must propagate");
+
+        let tracked = mgr
+            .get(pos.id)
+            .expect("OCO-A must remain tracked so it is not orphaned on exchange");
+        assert!(tracked.oco_a_list_id.is_some());
+        assert!(tracked.oco_b_list_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn replace_runner_stop_clears_old_oco_b_when_replacement_fails() {
+        let rules = sample_rules();
+        let broker = PaperBroker::new(PaperBrokerConfig {
+            rules: vec![rules.clone()],
+            ..PaperBrokerConfig::default()
+        });
+        broker.inject_orphan_balance("BTC", Decimal::from(2_u32));
+        let gw = FaultyGateway::new(broker);
+
+        let mut store = SqliteStore::open_in_memory().expect("store");
+        let mut mgr = DualOcoManager::new();
+        let mut pos = make_position(Uuid::now_v7(), 100, 95, 105, 110, 2);
+        pos.tp1_done = true;
+
+        // Install single runner OCO-B (call 0 succeeds).
+        let prot = mgr
+            .install_dual_oco(
+                &gw,
+                &mut store,
+                &pos,
+                &rules,
+                Decimal::new(5, 1),
+                "b01",
+                1,
+                1_000,
+            )
+            .await
+            .expect("initial runner OCO");
+        assert!(prot.oco_b_list_id.is_some());
+
+        // Fail next place_oco (call 1) after cancel_list succeeds.
+        gw.fail_oco_after.store(1, Ordering::SeqCst);
+        let err = mgr
+            .replace_runner_stop(
+                &gw,
+                &mut store,
+                &pos,
+                Price(Decimal::from(100_u32)),
+                true,
+                &rules,
+                "b01",
+                1,
+                2_000,
+            )
+            .await;
+        assert!(err.is_err(), "replacement failure must propagate");
+
+        let tracked = mgr.get(pos.id).expect("protection entry exists");
+        assert!(
+            !tracked.has_active_protection(),
+            "canceled OCO-B must be cleared so HardStopWatcher sees unprotected state"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_does_not_count_orphan_order_when_cancel_fails() {
+        let rules = sample_rules();
+        let broker = PaperBroker::new(PaperBrokerConfig {
+            rules: vec![rules.clone()],
+            ..PaperBrokerConfig::default()
+        });
+        broker.inject_orphan_order(
+            Symbol("BTCUSDT".into()),
+            "orphan-fail-cancel".into(),
+            bot_types::Side::Buy,
+            OrderKind::Limit,
+            Price(Decimal::from(90_u32)),
+            bot_types::Qty(Decimal::ONE),
+        );
+        let gw = FaultyGateway::new(broker);
+        gw.fail_cancel_order.store(true, Ordering::SeqCst);
+
+        let mut store = SqliteStore::open_in_memory().expect("store");
+        let mut state = PersistedEngineState::default();
+        let mut fsm = OrderFsm::new();
+        let mut oco_mgr = DualOcoManager::new();
+        let mut rules_map = BTreeMap::new();
+        rules_map.insert(Symbol("BTCUSDT".into()), rules);
+        let mut ref_prices = BTreeMap::new();
+        ref_prices.insert(Symbol("BTCUSDT".into()), Price(Decimal::from(100_u32)));
+
+        let rep = reconcile_venue(
+            &gw,
+            &mut store,
+            &mut state,
+            &mut fsm,
+            &mut oco_mgr,
+            &rules_map,
+            &ref_prices,
+            &ReconcileConfig {
+                venue: Venue::Spot,
+                quote_asset: "USDT".into(),
+                orphan_policy: OrphanPolicy::Flatten,
+                bot_id: "b01".into(),
+                run_id: 1,
+                tp1_close_ratio: Decimal::new(5, 1),
+                adopt_stop_pct: Decimal::from(2_u32),
+            },
+            2_000,
+        )
+        .await
+        .expect("reconcile completes");
+
+        assert!(rep.material_mismatch);
+        assert_eq!(
+            rep.orphan_orders_handled, 0,
+            "failed cancel_order must not be counted as handled"
+        );
+    }
+}

@@ -90,6 +90,23 @@ impl DualOcoManager {
         self.protections.remove(&position_id)
     }
 
+    /// Record a protection reinstall failure even if no prior protection entry existed (§5.5 #1).
+    pub fn record_reinstall_failure(&mut self, position_id: Uuid, fallback_stop: Price) -> u32 {
+        let entry = self
+            .protections
+            .entry(position_id)
+            .or_insert(PositionProtection {
+                oco_a_list_id: None,
+                oco_a_list_cid: None,
+                oco_b_list_id: None,
+                oco_b_list_cid: None,
+                installed_stop: fallback_stop,
+                reinstall_failures: 0,
+            });
+        entry.reinstall_failures = entry.reinstall_failures.saturating_add(1);
+        entry.reinstall_failures
+    }
+
     /// Mark OCO-A or OCO-B completed when a `ListStatus` (`ALL_DONE`) arrives from exchange.
     pub fn on_list_done(&mut self, order_list_id: i64) -> Option<(Uuid, bool)> {
         for (&pos_id, prot) in &mut self.protections {
@@ -114,7 +131,11 @@ impl DualOcoManager {
     ///
     /// # Errors
     /// Returns [`ProtectionError`] on store, rounding, or gateway failure.
-    #[allow(clippy::too_many_arguments, clippy::similar_names)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::similar_names,
+        clippy::too_many_lines
+    )]
     pub async fn install_dual_oco<G: ExchangeGateway + ?Sized>(
         &mut self,
         gateway: &G,
@@ -175,6 +196,19 @@ impl DualOcoManager {
                 run_id,
             )
             .await?;
+
+            // Persist OCO-A immediately so it is never orphaned if OCO-B placement fails.
+            self.protections.insert(
+                pos.id,
+                PositionProtection {
+                    oco_a_list_id: Some(aid),
+                    oco_a_list_cid: Some(acid.clone()),
+                    oco_b_list_id: None,
+                    oco_b_list_cid: None,
+                    installed_stop: stop_px,
+                    reinstall_failures: 0,
+                },
+            );
 
             let (bid, bcid) = place_single_oco(
                 gateway,
@@ -266,25 +300,24 @@ impl DualOcoManager {
             rules.tick_size,
         )?;
 
-        // §4.4: Journal protection change BEFORE sending to exchange.
-        let env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
-            venue: pos.venue,
-            position_id: pos.id,
-            new_stop_price: stop_px,
-            breakeven_done,
+        let old_oco_b = self.protections.get(&pos.id).and_then(|existing| {
+            existing
+                .oco_b_list_id
+                .map(|id| (id, existing.oco_b_list_cid.clone()))
         });
-        store.append_event(ts_ms, &env)?;
-
-        if let Some(existing) = self.protections.get(&pos.id)
-            && let Some(old_id) = existing.oco_b_list_id
-        {
-            let _ = gateway
+        if let Some((old_id, old_cid)) = old_oco_b
+            && gateway
                 .cancel_list(CancelOrderListRequest {
                     symbol: pos.symbol.clone(),
                     order_list_id: Some(old_id),
-                    list_client_order_id: existing.oco_b_list_cid.clone(),
+                    list_client_order_id: old_cid,
                 })
-                .await;
+                .await
+                .is_ok()
+            && let Some(existing) = self.protections.get_mut(&pos.id)
+        {
+            existing.oco_b_list_id = None;
+            existing.oco_b_list_cid = None;
         }
 
         let (bid, bcid) = place_single_oco(
@@ -301,6 +334,14 @@ impl DualOcoManager {
             run_id,
         )
         .await?;
+
+        let env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
+            venue: pos.venue,
+            position_id: pos.id,
+            new_stop_price: stop_px,
+            breakeven_done,
+        });
+        store.append_event(ts_ms, &env)?;
 
         let entry = self
             .protections

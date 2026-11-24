@@ -420,3 +420,375 @@ fn command_channel_backpressure_returns_busy_when_full() {
     assert!(matches!(EngineHandleError::Busy, EngineHandleError::Busy));
     let _ = tel_rx;
 }
+
+mod audit_regression_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use async_trait::async_trait;
+    use bot_config::BotConfig;
+    use bot_engine::{EngineActor, MarketTick};
+    use bot_exchange::{
+        AccountSnapshot, ActivationReport, CancelOrderAck, CancelOrderListAck,
+        CancelOrderListRequest, CancelOrderRequest, CancelReplaceAck, CancelReplaceRequest,
+        ExchangeGateway, ExchangeInfoSnapshot, GatewayError, OcoOrderAck, OrderAck, OrderSnapshot,
+        PlaceOcoRequest, PlaceOrderRequest, QueryOrderRequest, VenueAdapter,
+    };
+    use bot_exec::{PaperBroker, PaperBrokerConfig};
+    use bot_store::{JournalEnvelope, JournalEvent, SqliteStore};
+    use bot_types::{
+        Direction, OrderKind, Position, PositionState, Price, Qty, Side, StrategyId, Symbol, Venue,
+        VenueCaps,
+    };
+    use rust_decimal::Decimal;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::sample_rules;
+
+    struct FaultyAdapter {
+        inner: PaperBroker,
+        fail_market_sell: AtomicBool,
+        fail_oco: AtomicBool,
+    }
+
+    impl FaultyAdapter {
+        fn new(inner: PaperBroker) -> Self {
+            Self {
+                inner,
+                fail_market_sell: AtomicBool::new(false),
+                fail_oco: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ExchangeGateway for FaultyAdapter {
+        async fn place_order(&self, req: PlaceOrderRequest) -> Result<OrderAck, GatewayError> {
+            if self.fail_market_sell.load(Ordering::SeqCst)
+                && req.side == Side::Sell
+                && req.kind == OrderKind::Market
+            {
+                return Err(GatewayError::Transport(
+                    "injected market sell failure".into(),
+                ));
+            }
+            self.inner.place_order(req).await
+        }
+
+        async fn cancel_order(
+            &self,
+            req: CancelOrderRequest,
+        ) -> Result<CancelOrderAck, GatewayError> {
+            self.inner.cancel_order(req).await
+        }
+
+        async fn cancel_replace(
+            &self,
+            req: CancelReplaceRequest,
+        ) -> Result<CancelReplaceAck, GatewayError> {
+            self.inner.cancel_replace(req).await
+        }
+
+        async fn place_oco(&self, req: PlaceOcoRequest) -> Result<OcoOrderAck, GatewayError> {
+            if self.fail_oco.load(Ordering::SeqCst) {
+                return Err(GatewayError::Transport("injected place_oco failure".into()));
+            }
+            self.inner.place_oco(req).await
+        }
+
+        async fn cancel_list(
+            &self,
+            req: CancelOrderListRequest,
+        ) -> Result<CancelOrderListAck, GatewayError> {
+            self.inner.cancel_list(req).await
+        }
+
+        async fn query_order(&self, req: QueryOrderRequest) -> Result<OrderSnapshot, GatewayError> {
+            self.inner.query_order(req).await
+        }
+
+        async fn open_orders(
+            &self,
+            symbol: Option<&Symbol>,
+        ) -> Result<Vec<OrderSnapshot>, GatewayError> {
+            self.inner.open_orders(symbol).await
+        }
+
+        async fn account_snapshot(&self) -> Result<AccountSnapshot, GatewayError> {
+            self.inner.account_snapshot().await
+        }
+
+        async fn exchange_info(&self) -> Result<ExchangeInfoSnapshot, GatewayError> {
+            self.inner.exchange_info().await
+        }
+    }
+
+    #[async_trait]
+    impl VenueAdapter for FaultyAdapter {
+        fn venue(&self) -> Venue {
+            VenueAdapter::venue(&self.inner)
+        }
+
+        fn caps(&self) -> VenueCaps {
+            self.inner.caps()
+        }
+
+        async fn activate(&self) -> Result<ActivationReport, GatewayError> {
+            self.inner.activate().await
+        }
+
+        async fn deactivate(&self) -> Result<(), GatewayError> {
+            self.inner.deactivate().await
+        }
+    }
+
+    fn seed_open_position(store: &mut SqliteStore, id: Uuid) {
+        let pos = Position {
+            id,
+            symbol: Symbol("BTCUSDT".into()),
+            venue: Venue::Spot,
+            direction: Direction::Long,
+            strategy: StrategyId::TrendPullback,
+            entry_price: Price(Decimal::from(100_u32)),
+            qty_initial: Qty(Decimal::from(2_u32)),
+            qty_open: Qty(Decimal::from(2_u32)),
+            r_distance: Decimal::from(4_u32),
+            leverage: None,
+            liq_price: None,
+            stop_price: Price(Decimal::from(96_u32)),
+            tp1_price: Price(Decimal::from(106_u32)),
+            tp2_price: Some(Price(Decimal::from(112_u32))),
+            best_price: Price(Decimal::from(100_u32)),
+            tp1_done: false,
+            breakeven_done: false,
+            fees_paid_quote: Decimal::ZERO,
+            realized_pnl_quote: Decimal::ZERO,
+            state: PositionState::OpenProtected,
+            opened_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        store
+            .append_event(
+                1_000,
+                &JournalEnvelope::new(JournalEvent::PositionOpened { position: pos }),
+            )
+            .expect("seed position");
+    }
+
+    #[tokio::test]
+    async fn execute_market_exit_keeps_position_open_when_market_sell_fails() {
+        let btc = Symbol("BTCUSDT".into());
+        let broker = PaperBroker::new(PaperBrokerConfig {
+            rules: vec![sample_rules("BTCUSDT")],
+            initial_quote_balance: Decimal::from(10_000_u32),
+            ..PaperBrokerConfig::default()
+        });
+        broker.inject_orphan_balance("BTC", Decimal::from(2_u32));
+        broker.on_price_tick(
+            &btc,
+            Price(Decimal::from(100_u32)),
+            Price(Decimal::from(101_u32)),
+            1_000,
+        );
+        let event_rx = broker.take_event_rx().expect("event_rx");
+        let adapter = Arc::new(FaultyAdapter::new(broker));
+        adapter.activate().await.expect("activate");
+
+        let mut store = SqliteStore::open_in_memory().expect("store");
+        seed_open_position(&mut store, Uuid::from_u128(101));
+
+        let actor = EngineActor::bootstrap(
+            BotConfig::default(),
+            "b01".into(),
+            store,
+            adapter.clone(),
+            Decimal::from(10_000_u32),
+            1_000,
+        )
+        .await
+        .expect("bootstrap");
+        let (handle, join) = actor.spawn(event_rx);
+
+        // Inject market sell failure and trigger time-stop exit.
+        adapter.fail_market_sell.store(true, Ordering::SeqCst);
+        handle
+            .on_market_tick(MarketTick {
+                venue: Venue::Spot,
+                symbol: btc,
+                price: Price(Decimal::from(100_u32)),
+                atr: Decimal::from(2_u32),
+                rsi_14: Some(Decimal::from(50_u32)),
+                bars_in_trade: 10_000,
+                now_ms: 2_000,
+            })
+            .await
+            .expect("tick");
+
+        assert_eq!(
+            handle.telemetry().open_positions,
+            1,
+            "position must NOT be marked Closed when emergency market sell fails"
+        );
+
+        let _ = handle.shutdown(3_000).await;
+        let _ = join.await;
+    }
+
+    #[tokio::test]
+    async fn reinstall_protection_failure_triggers_emergency_exit_after_two_failures() {
+        let btc = Symbol("BTCUSDT".into());
+        let broker = PaperBroker::new(PaperBrokerConfig {
+            rules: vec![sample_rules("BTCUSDT")],
+            initial_quote_balance: Decimal::from(10_000_u32),
+            ..PaperBrokerConfig::default()
+        });
+        broker.inject_orphan_balance("BTC", Decimal::from(2_u32));
+        broker.on_price_tick(
+            &btc,
+            Price(Decimal::from(100_u32)),
+            Price(Decimal::from(101_u32)),
+            1_000,
+        );
+        let event_rx = broker.take_event_rx().expect("event_rx");
+        let adapter = Arc::new(FaultyAdapter::new(broker));
+        adapter.activate().await.expect("activate");
+        // Fail OCO installation from the very start so oco_mgr has no entry for this position.
+        adapter.fail_oco.store(true, Ordering::SeqCst);
+
+        let store = SqliteStore::open_in_memory().expect("store");
+        let actor = EngineActor::bootstrap(
+            BotConfig::default(),
+            "b01".into(),
+            store,
+            adapter.clone(),
+            Decimal::from(10_000_u32),
+            1_000,
+        )
+        .await
+        .expect("bootstrap");
+        let (handle, join) = actor.spawn(event_rx);
+
+        // Submit entry and fill it while fail_oco = true so oco_mgr has no entry for this position.
+        let _ = handle
+            .submit_entry(
+                bot_risk::EntryIntent {
+                    venue: Venue::Spot,
+                    symbol: btc.clone(),
+                    direction: Direction::Long,
+                    strategy: StrategyId::TrendPullback,
+                    entry_price: Price(Decimal::from(100_u32)),
+                    stop_price: Price(Decimal::from(96_u32)),
+                    tp1_price: Price(Decimal::from(106_u32)),
+                    size_mult: Decimal::ONE,
+                    scanner_mult: Decimal::ONE,
+                    is_scanner: false,
+                },
+                1_000,
+            )
+            .await
+            .expect("submit entry");
+        adapter.inner.on_price_tick(
+            &btc,
+            Price(Decimal::from(99_u32)),
+            Price(Decimal::from(100_u32)),
+            1_050,
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(handle.telemetry().open_positions, 1);
+
+        // 3 ticks within grace window: failure 1, failure 2, then 2x failure triggers EmergencyMarketExit.
+        for i in 1..=3_i64 {
+            handle
+                .on_market_tick(MarketTick {
+                    venue: Venue::Spot,
+                    symbol: btc.clone(),
+                    price: Price(Decimal::from(100_u32)),
+                    atr: Decimal::from(2_u32),
+                    rsi_14: Some(Decimal::from(50_u32)),
+                    bars_in_trade: 1,
+                    now_ms: 1_000 + i * 100,
+                })
+                .await
+                .expect("tick");
+        }
+
+        assert_eq!(
+            handle.telemetry().open_positions,
+            0,
+            "2x reinstall_protection failures must trigger emergency exit even without prior OCO entry"
+        );
+
+        let _ = handle.shutdown(3_000).await;
+        let _ = join.await;
+    }
+
+    #[tokio::test]
+    async fn move_stop_failure_does_not_advance_local_stop_price() {
+        let btc = Symbol("BTCUSDT".into());
+        let broker = PaperBroker::new(PaperBrokerConfig {
+            rules: vec![sample_rules("BTCUSDT")],
+            initial_quote_balance: Decimal::from(10_000_u32),
+            ..PaperBrokerConfig::default()
+        });
+        broker.inject_orphan_balance("BTC", Decimal::from(2_u32));
+        broker.on_price_tick(
+            &btc,
+            Price(Decimal::from(100_u32)),
+            Price(Decimal::from(101_u32)),
+            1_000,
+        );
+        let event_rx = broker.take_event_rx().expect("event_rx");
+        let adapter = Arc::new(FaultyAdapter::new(broker));
+        adapter.activate().await.expect("activate");
+
+        let dir = tempfile::TempDir::new().expect("tmpdir");
+        let db_path = dir.path().join("move_stop_fail.db");
+        {
+            let mut store = SqliteStore::open(&db_path).expect("store");
+            seed_open_position(&mut store, Uuid::from_u128(103));
+        }
+
+        let store = SqliteStore::open(&db_path).expect("reopen");
+        let actor = EngineActor::bootstrap(
+            BotConfig::default(),
+            "b01".into(),
+            store,
+            adapter.clone(),
+            Decimal::from(10_000_u32),
+            1_000,
+        )
+        .await
+        .expect("bootstrap");
+        let (handle, join) = actor.spawn(event_rx);
+
+        // Fail OCO replacement, then tick at +1.5R (106) to trigger BE MoveStop.
+        adapter.fail_oco.store(true, Ordering::SeqCst);
+        handle
+            .on_market_tick(MarketTick {
+                venue: Venue::Spot,
+                symbol: btc,
+                price: Price(Decimal::from(106_u32)),
+                atr: Decimal::from(2_u32),
+                rsi_14: Some(Decimal::from(50_u32)),
+                bars_in_trade: 2,
+                now_ms: 2_000,
+            })
+            .await
+            .expect("tick");
+
+        let _ = handle.shutdown(3_000).await;
+        let _ = join.await;
+
+        let verify_store = SqliteStore::open(&db_path).expect("verify store");
+        let recovered = verify_store.recover_state().expect("recover");
+        let pos = recovered
+            .positions
+            .get(&Uuid::from_u128(103))
+            .expect("position exists");
+        assert_eq!(
+            pos.stop_price,
+            Price(Decimal::from(96_u32)),
+            "failed replace_runner_stop must NOT advance local stop_price"
+        );
+    }
+}

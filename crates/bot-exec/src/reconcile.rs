@@ -192,17 +192,22 @@ pub async fn reconcile_venue<G: ExchangeGateway + ?Sized>(
             continue;
         }
         report.material_mismatch = true;
-        report.orphan_orders_handled += 1;
 
         if cfg.orphan_policy == OrphanPolicy::Flatten {
-            let _ = gateway
+            if gateway
                 .cancel_order(CancelOrderRequest {
                     symbol: ex_ord.symbol.clone(),
                     orig_client_order_id: Some(ex_ord.client_order_id.clone()),
                     order_id: Some(ex_ord.order_id),
                     new_client_order_id: None,
                 })
-                .await;
+                .await
+                .is_ok()
+            {
+                report.orphan_orders_handled += 1;
+            }
+        } else {
+            report.orphan_orders_handled += 1;
         }
     }
 
