@@ -199,6 +199,19 @@ pub enum JournalEvent {
         /// Updated venue state row.
         record: VenueStateRecord,
     },
+    /// Completed runtime venue switch (`Spot <-> UsdsFutures`, §3.5).
+    VenueSwitched {
+        /// Previous active venue.
+        from: Venue,
+        /// Newly active target venue.
+        to: Venue,
+        /// Open-position handling policy (`keep_managing`, `require_flat`, `flatten`).
+        policy: String,
+        /// Authenticated caller principal.
+        actor: String,
+        /// Execution timestamp (UTC ms).
+        ts_ms: i64,
+    },
     /// Persistent risk state key/value update (`day_start_equity`, `peak_equity`, etc.).
     RiskStateSet {
         /// Risk state key.
@@ -242,6 +255,7 @@ impl JournalEvent {
             Self::PositionStateChanged { .. } => "PositionStateChanged",
             Self::EngineModeChanged { .. } => "EngineModeChanged",
             Self::VenueStateChanged { .. } => "VenueStateChanged",
+            Self::VenueSwitched { .. } => "VenueSwitched",
             Self::RiskStateSet { .. } => "RiskStateSet",
             Self::Command { .. } => "Command",
         }
@@ -260,6 +274,7 @@ impl JournalEvent {
             Self::FillRecorded { fill } => Some(fill.venue),
             Self::PositionOpened { position } => Some(position.venue),
             Self::VenueStateChanged { record } => Some(record.venue),
+            Self::VenueSwitched { to, .. } => Some(*to),
             Self::Command { venue, .. } => *venue,
             Self::EngineModeChanged { .. } | Self::RiskStateSet { .. } => None,
         }
@@ -279,6 +294,7 @@ impl JournalEvent {
             | Self::FillRecorded { .. }
             | Self::EngineModeChanged { .. }
             | Self::VenueStateChanged { .. }
+            | Self::VenueSwitched { .. }
             | Self::RiskStateSet { .. }
             | Self::Command { .. } => None,
         }
@@ -298,6 +314,7 @@ impl JournalEvent {
             | Self::PositionStateChanged { .. }
             | Self::EngineModeChanged { .. }
             | Self::VenueStateChanged { .. }
+            | Self::VenueSwitched { .. }
             | Self::RiskStateSet { .. }
             | Self::Command { .. } => None,
         }

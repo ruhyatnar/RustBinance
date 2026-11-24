@@ -15,6 +15,7 @@ bot-exec = { path = "../bot-exec", version = "0.1.0" }
 bot-risk = { path = "../bot-risk", version = "0.1.0" }
 bot-store = { path = "../bot-store", version = "0.1.0" }
 bot-types = { workspace = true }
+bot-venue = { path = "../bot-venue", version = "0.1.0" }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

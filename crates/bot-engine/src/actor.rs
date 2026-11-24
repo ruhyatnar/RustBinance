@@ -18,11 +18,14 @@ use bot_risk::{
     BtcCrashGuard, CombinedEquityCounters, EngineModeMachine, EntryIntent, GateDecision,
     Gatekeeper, GatekeeperContext, ModeTrigger,
 };
-use bot_store::{JournalEnvelope, JournalEvent, PersistedEngineState, SqliteStore};
+use bot_store::{
+    JournalEnvelope, JournalEvent, PersistedEngineState, SqliteStore, VenueStateRecord,
+};
 use bot_types::{
     EngineMode, InstrumentRules, Order, OrderKind, OrderPurpose, OrderStatus, Position,
-    PositionState, Price, Qty, Side, Symbol, Venue,
+    PositionState, Price, Qty, Side, Symbol, Venue, VenueState,
 };
+use bot_venue::{SwitchConfig, SwitchPolicy, SwitchPrecheckContext, VenueManager};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -75,6 +78,10 @@ pub struct TelemetrySnapshot {
     pub mode: EngineMode,
     /// Active venue.
     pub venue: Venue,
+    /// Current Spot venue lifecycle state.
+    pub spot_state: VenueState,
+    /// Current USDⓈ-M Futures venue lifecycle state.
+    pub futures_state: VenueState,
     /// Number of currently open positions.
     pub open_positions: usize,
     /// Number of currently active (non-terminal) orders.
@@ -84,6 +91,19 @@ pub struct TelemetrySnapshot {
     pub equity_total_usd: Decimal,
     /// Highest applied journal sequence number.
     pub last_seq: i64,
+}
+
+/// Summary returned after a completed runtime venue switch (§3.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VenueSwitchReport {
+    /// Previous active venue.
+    pub from: Venue,
+    /// Newly active venue.
+    pub to: Venue,
+    /// Resulting state of the previous venue (`Draining` or `Disabled`).
+    pub old_venue_state: VenueState,
+    /// Number of unfilled entry orders canceled on the old venue (protections preserved).
+    pub canceled_entry_orders: usize,
 }
 
 /// Market price tick delivered to [`EngineActor`] for position lifecycle evaluation.
@@ -163,6 +183,19 @@ pub enum EngineCommand {
         now_ms: i64,
         /// Reply with snapshot row ID.
         reply: oneshot::Sender<Result<i64, String>>,
+    },
+    /// Atomically switch active venue (`Spot <-> UsdsFutures`, §3.5).
+    SwitchVenue {
+        /// Target venue to activate.
+        target: Venue,
+        /// Open-position handling policy on the old venue.
+        policy: SwitchPolicy,
+        /// Authenticated caller principal for audit journaling.
+        actor: String,
+        /// Current UTC ms.
+        now_ms: i64,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<VenueSwitchReport, String>>,
     },
     /// Graceful shutdown (`SIGTERM`): cancel ONLY pending entry orders, preserve all protections!
     Shutdown {
@@ -275,12 +308,36 @@ impl EngineHandle {
         self.try_send(EngineCommand::SnapshotNow { now_ms, reply: tx })?;
         rx.await.map_err(|_| EngineHandleError::Closed)
     }
+
+    /// Request an atomic runtime venue switch (`Spot <-> UsdsFutures`, §3.5).
+    ///
+    /// # Errors
+    /// Returns [`EngineHandleError`] if the bounded command queue is full or actor closed.
+    pub async fn switch_venue(
+        &self,
+        target: Venue,
+        policy: SwitchPolicy,
+        actor: String,
+        now_ms: i64,
+    ) -> Result<Result<VenueSwitchReport, String>, EngineHandleError> {
+        let (tx, rx) = oneshot::channel();
+        self.try_send(EngineCommand::SwitchVenue {
+            target,
+            policy,
+            actor,
+            now_ms,
+            reply: tx,
+        })?;
+        rx.await.map_err(|_| EngineHandleError::Closed)
+    }
 }
 
 /// Single-writer trading Engine Actor (§3.2).
 pub struct EngineActor {
     config: BotConfig,
     venue: Venue,
+    venue_manager: VenueManager,
+    secondary_adapters: BTreeMap<Venue, Arc<dyn VenueAdapter>>,
     bot_id: String,
     run_id: u64,
     store: SqliteStore,
@@ -376,9 +433,12 @@ impl EngineActor {
             BtcCrashGuard::new(config.risk.btc_crash_15m_pct, config.risk.btc_crash_60m_pct);
         let gatekeeper = Gatekeeper::new(config.risk.clone());
 
+        let venue_manager = VenueManager::new(venue, SwitchConfig::default());
         let initial_tel = TelemetrySnapshot {
             mode: mode_machine.mode(),
             venue,
+            spot_state: venue_manager.state(Venue::Spot),
+            futures_state: venue_manager.state(Venue::UsdsFutures),
             open_positions: state.positions.len(),
             active_orders: state.orders.len(),
             equity_total_usd: counters.combined_equity(),
@@ -389,6 +449,8 @@ impl EngineActor {
         Ok(Self {
             config,
             venue,
+            venue_manager,
+            secondary_adapters: BTreeMap::new(),
             bot_id,
             run_id,
             store,
@@ -471,6 +533,19 @@ impl EngineActor {
                                     .map_err(|e| e.to_string());
                                 let _ = reply.send(res);
                             }
+                            EngineCommand::SwitchVenue {
+                                target,
+                                policy,
+                                actor,
+                                now_ms,
+                                reply,
+                            } => {
+                                let res = self
+                                    .handle_switch_venue(target, policy, &actor, now_ms)
+                                    .await;
+                                self.publish_telemetry();
+                                let _ = reply.send(res);
+                            }
                             EngineCommand::Shutdown { now_ms, reply } => {
                                 let canceled = self.perform_graceful_shutdown(now_ms).await;
                                 self.publish_telemetry();
@@ -485,6 +560,21 @@ impl EngineActor {
         });
 
         (handle, task)
+    }
+
+    /// Register a secondary venue adapter (e.g. `UsdsFutures` when bootstrapped on `Spot`)
+    /// so runtime `switch_venue` can activate and switch to it (§3.5).
+    pub fn register_secondary_adapter(
+        &mut self,
+        adapter: Arc<dyn VenueAdapter>,
+        enabled: bool,
+        credentials_valid: bool,
+    ) {
+        let v = adapter.venue();
+        self.venue_manager.set_venue_enabled(v, enabled);
+        self.venue_manager
+            .set_credentials_valid(v, credentials_valid);
+        self.secondary_adapters.insert(v, adapter);
     }
 
     /// Access recovered/current [`PersistedEngineState`] (useful after actor shutdown in tests).
@@ -505,11 +595,148 @@ impl EngineActor {
         let _ = self.telemetry_tx.send(TelemetrySnapshot {
             mode: self.mode_machine.mode(),
             venue: self.venue,
+            spot_state: self.venue_manager.state(Venue::Spot),
+            futures_state: self.venue_manager.state(Venue::UsdsFutures),
             open_positions: self.state.positions.len(),
             active_orders: self.state.orders.len(),
             equity_total_usd: self.counters.combined_equity(),
             last_seq: self.state.last_seq,
         });
+    }
+
+    async fn handle_switch_venue(
+        &mut self,
+        target: Venue,
+        policy: SwitchPolicy,
+        actor: &str,
+        now_ms: i64,
+    ) -> Result<VenueSwitchReport, String> {
+        let old_venue = self.venue;
+        let old_open_positions = self
+            .state
+            .positions
+            .values()
+            .filter(|p| p.venue == old_venue && p.state != PositionState::Closed)
+            .count();
+        let utc_day = u32::try_from(now_ms.max(0) / 86_400_000).unwrap_or(0);
+        let ctx = SwitchPrecheckContext {
+            engine_mode: self.mode_machine.mode(),
+            trading_mode: self.config.general.mode,
+            syncing: self.mode_machine.mode() == EngineMode::Syncing,
+            old_open_positions,
+            now_ms,
+            utc_day,
+        };
+
+        self.venue_manager
+            .begin_switch(target, policy, &ctx)
+            .map_err(|e| e.to_string())?;
+
+        // Step 2 (§3.5): cancel ONLY unfilled entry orders on old venue; preserve all protections!
+        let mut canceled_entry_orders = 0_usize;
+        let pending_entries: Vec<(Symbol, String)> = self
+            .state
+            .orders
+            .values()
+            .filter(|o| {
+                o.venue == old_venue
+                    && o.purpose == OrderPurpose::Entry
+                    && !is_terminal(o.status)
+            })
+            .map(|o| (o.symbol.clone(), o.client_id.clone()))
+            .collect();
+        for (sym, cid) in pending_entries {
+            if self
+                .adapter
+                .cancel_order(CancelOrderRequest {
+                    symbol: sym,
+                    orig_client_order_id: Some(cid.clone()),
+                    order_id: None,
+                    new_client_order_id: None,
+                })
+                .await
+                .is_ok()
+            {
+                canceled_entry_orders = canceled_entry_orders.saturating_add(1);
+            }
+        }
+
+        // Step 4 (§3.5): activate target adapter.
+        let Some(target_adapter) = self.secondary_adapters.get(&target).cloned() else {
+            self.venue_manager.rollback_switch(old_venue, target);
+            let _ = self.mode_machine.apply(
+                ModeTrigger::ManualPause {
+                    reason: format!("no adapter registered for target venue {target:?}"),
+                },
+                now_ms,
+            );
+            return Err(format!("no adapter registered for target venue {target:?}"));
+        };
+
+        if let Err(err) = target_adapter.activate().await {
+            // Step 5 (§3.5): rollback cleanly -> target Disabled, old Active, engine Paused, alarm.
+            warn!(?old_venue, ?target, error = %err, "venue activation failed; rolling back");
+            self.venue_manager.rollback_switch(old_venue, target);
+            let reason = format!("venue switch rollback ({target:?} activation failed: {err})");
+            let mode = self.mode_machine.apply(
+                ModeTrigger::ManualPause {
+                    reason: reason.clone(),
+                },
+                now_ms,
+            );
+            let env = JournalEnvelope::new(JournalEvent::EngineModeChanged { mode, reason });
+            if let Ok(seq) = self.store.append_event(now_ms, &env) {
+                self.state.apply_event(seq, &env);
+            }
+            return Err(format!("activation failed (rolled back): {err}"));
+        }
+
+        // Step 6 (§3.5): finalize switch, swap active adapter, journal VenueSwitched & VenueStateChanged.
+        // Note: self.counters is NEVER reset across venue switches.
+        self.venue_manager
+            .complete_switch(target, policy, now_ms, utc_day);
+        let prev_adapter = std::mem::replace(&mut self.adapter, target_adapter);
+        self.secondary_adapters.insert(old_venue, prev_adapter);
+        self.venue = target;
+
+        let old_state = self.venue_manager.state(old_venue);
+        let switches_today = self.venue_manager.switches_today(utc_day);
+        for (v, st) in [(old_venue, old_state), (target, VenueState::Active)] {
+            let rec = VenueStateRecord {
+                venue: v,
+                state: st,
+                since_ms: now_ms,
+                last_switch_ms: Some(now_ms),
+                switches_today,
+            };
+            let env = JournalEnvelope::new(JournalEvent::VenueStateChanged { record: rec });
+            if let Ok(seq) = self.store.append_event(now_ms, &env) {
+                self.state.apply_event(seq, &env);
+            }
+        }
+        let policy_str = match policy {
+            SwitchPolicy::KeepManaging => "keep_managing",
+            SwitchPolicy::RequireFlat => "require_flat",
+            SwitchPolicy::Flatten => "flatten",
+        };
+        let sw_env = JournalEnvelope::new(JournalEvent::VenueSwitched {
+            from: old_venue,
+            to: target,
+            policy: policy_str.to_owned(),
+            actor: actor.to_owned(),
+            ts_ms: now_ms,
+        });
+        if let Ok(seq) = self.store.append_event(now_ms, &sw_env) {
+            self.state.apply_event(seq, &sw_env);
+        }
+
+        info!(?old_venue, ?target, ?old_state, canceled_entry_orders, "venue switched");
+        Ok(VenueSwitchReport {
+            from: old_venue,
+            to: target,
+            old_venue_state: old_state,
+            canceled_entry_orders,
+        })
     }
 
     #[allow(clippy::too_many_lines)]

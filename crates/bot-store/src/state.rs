@@ -171,11 +171,11 @@ impl PersistedEngineState {
             JournalEvent::VenueStateChanged { record } => {
                 self.venue_states.insert(record.venue, record.clone());
             }
+            JournalEvent::VenueSwitched { .. } | JournalEvent::Command { .. } => {
+                // Audit-only record; venue state mutations are emitted as VenueStateChanged.
+            }
             JournalEvent::RiskStateSet { key, value } => {
                 self.risk_state.insert(key.clone(), value.clone());
-            }
-            JournalEvent::Command { .. } => {
-                // Audit-only record; trading state mutations are emitted as dedicated events.
             }
         }
         self.last_seq = seq;

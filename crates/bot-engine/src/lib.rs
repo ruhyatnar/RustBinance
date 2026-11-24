@@ -7,5 +7,5 @@ pub mod actor;
 pub use actor::{
     COMMAND_CHANNEL_CAPACITY, EngineActor, EngineCommand, EngineError, EngineHandle,
     EngineHandleError, EntrySubmissionResult, MarketTick, TelemetrySnapshot,
-    USER_EVENT_CHANNEL_CAPACITY,
+    USER_EVENT_CHANNEL_CAPACITY, VenueSwitchReport,
 };
