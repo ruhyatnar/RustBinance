@@ -156,3 +156,11 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Sumber: Dokumentasi resmi Qt 6 CMake (`qt_add_qml_module`), KDE Frameworks 6 (`KStatusNotifierItem`, `KNotification`), verifikasi `apt-cache` Ubuntu 24.04 & paket Arch Linux
 - Diverifikasi: 2026-11-23 oleh agen
 - Dampak ke spec: ditambahkan `qqc2-desktop-style` pada `scripts/deps-arch.sh` dan dicatat pada `docs/decisions/0004-desktop-ui-qt6-optional-kf6.md`.
+
+## Deteksi CMake KF6 (`ECM` vs `KF6StatusNotifierItemConfig.cmake`) pada Arch/CachyOS   (milestone: M12)
+- Fakta:
+  - Pada Arch Linux / CachyOS, paket KF6 individual (`kstatusnotifieritem`, `knotifications`, `ki18n`) menginstal file konfigurasi CMake per modul (`KF6StatusNotifierItemConfig.cmake`, `KF6NotificationsConfig.cmake`, `KF6I18nConfig.cmake`) dan **bukan** `KF6Config.cmake`. Modul payung `FindKF6.cmake` disediakan oleh `extra-cmake-modules` (`find_package(ECM QUIET NO_MODULE)` + `list(APPEND CMAKE_MODULE_PATH "${ECM_MODULE_PATH}")`).
+  - Memanggil `find_package(KF6StatusNotifierItem ...)`, `find_package(KF6Notifications ...)`, dan `find_package(KF6I18n ...)` secara langsung (didampingi `ECM` opsional) berhasil mendeteksi dan me-link `KF6::StatusNotifierItem`, `KF6::Notifications`, dan `KF6::I18n` secara andal di Arch/CachyOS (GCC 16.2, Qt 6.12+).
+- Sumber: Verifikasi build CMake `-DBOT_REQUIRE_KF6=ON` pada container `archlinux:latest`
+- Diverifikasi: 2026-11-23 oleh agen
+- Dampak ke spec: tercermin pada `desktop-ui/CMakeLists.txt` (tetap kompatibel dengan daftar paket `scripts/deps-arch.sh` di §12.2).

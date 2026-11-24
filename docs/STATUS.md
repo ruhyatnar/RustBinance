@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M11 (selesai — menunggu persetujuan pemilik untuk lanjut ke M12)
+**Milestone aktif:** M12 (selesai — menunggu persetujuan pemilik untuk lanjut ke M13)
 **Mode build:** paper (tidak ada live)
 **Terakhir diperbarui:** 2026-11-23
 
@@ -17,7 +17,7 @@
 - [x] **M09** — bot-backtest: replay & walk-forward  → `docs/milestones/M09-*.md`
 - [x] **M10** — bot-ipc + botctl  → `docs/milestones/M10-*.md`
 - [x] **M11** — web-ui  → `docs/milestones/M11-*.md`
-- [ ] **M12** — desktop-ui (Qt6/Plasma 6)  → `docs/milestones/M12-*.md`
+- [x] **M12** — desktop-ui (Qt6/Plasma 6)  → `docs/milestones/M12-*.md`
 - [ ] **M13** — Packaging, installer, systemd, chaos suite  → `docs/milestones/M13-*.md`
 - [ ] **M14** — OPERASIONAL: gerbang Spot G2→G5  → `docs/milestones/M14-*.md`
 - [ ] **M15** — FuturesAdapter  → `docs/milestones/M15-*.md`
@@ -28,10 +28,9 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-23 (M11):** Implementasikan `web-ui` (SvelteKit 2 `adapter-static` SPA + Svelte 5 runes + Tailwind CSS v4 + Lightweight Charts) serta 4 perbaikan kompatibilitas `bot-ipc`/CI (§11.1–§11.3, §11.5, §10):
-  - `bot-ipc`: tambahkan `"auth_scope": "readonly" | "full"` pada `GET /api/v1/health` dan selaraskan `InMemoryIpcBackend::build_mode()` dengan `config.general.mode` (+ tes regresi).
-  - `web-ui/src/lib/api/`: mirror TypeScript penuh `protocol/ipc-v1.schema.json` (`types.ts` + tes kontrak terhadap seluruh 9 fixture `protocol/fixtures/v1/*.json`), `IpcHttpClient` (header `Authorization: Bearer`, normalisasi `HttpErrorResponse` & `CommandResultPayload` ke `ApiError`), serta runes store `stream.svelte.ts` (token hanya memori/`sessionStorage`, nol `localStorage`, *first-message WS auth*, reconnect backoff eksponensial, deteksi gap `seq` → `request_snapshot`, mode read-only default + unlock eksplisit untuk token penuh).
-  - `web-ui/src/lib/format/decimal.ts`: formatter desimal murni berbasis string (`formatDecimalString`, `decimalSign`, `decimalDirectionIcon` ▲/▼/•) tanpa `parseFloat` untuk nilai presisi.
-  - Komponen & 9 layar: `AuthGate`, `ModeBanner` (`PAPER` biru / `TESTNET` kuning / `LIVE` merah-oranye bergaris + venue + status engine), `HoldToConfirm` (tahan 1,5 detik + nonce 10 detik, blokir pintasan 1 tombol), `RiskGauge`, `PositionTable`, `SignalsFeed`, `EventLog`, `DepthLadder`, `Candles` (Lightweight Charts), serta 9 rute (`Cockpit`, `Positions`, `Signals`, `Market`, `Risk`, `Performance`, `Logs`, `Settings` tighten-only, `System`).
-  - **Tes lulus:** `./scripts/verify.sh` hijau penuh (`rustfmt`, `clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` **109/109** lulus, `cargo deny check` ok, `web-ui`: `npm ci && npm run check` 0 error/0 warning, `npm test` **23/23** Vitest lulus, `npm run build` static SPA selesai, secret scan ok).
-  - **Belum teruji:** Uji manual browser interaktif terhadap daemon paper/testnet hidup (`binance-botd` wiring di M13), Desktop UI Qt6/QML (M12), dan Venue Switcher (M16); commit M11 belum di-`git push`.
+- **2026-11-23 (M12):** Implementasikan `desktop-ui` (`binance-bot-ui`, C++20 + Qt6/QML + integrasi opsional KF6 Plasma 6, `ADR-0004`) serta perluasan kontrak UDS/WS IPC v1 (§11.1–§11.4, §10.2, §12.2):
+  - `bot-ipc` & `protocol/ipc-v1.schema.json`: tambahkan envelope venue-aware `get_klines` / `klines` (`KlineBar`) dan `get_trades` / `trades` (`TradeRecord`) di UDS & WS (+ fixture `klines.json` & `trades.json`, sinkronisasi `web-ui/src/lib/api/types.ts`, dan contoh daemon `crates/bot-ipc/examples/mock_uds_daemon.rs`).
+  - `desktop-ui/src/`: `DecimalFormat` murni berbasis string tanpa `double` untuk teks presisi, `StateStore` + 7 `QAbstractListModel` (`PositionsModel`, `OrdersModel`, `SignalsModel`, `MarketTicksModel`, `EventsModel`, `AlertsModel`, `TradesModel`) dengan deduplikasi notifikasi alert, `IpcClient` (`QLocalSocket` NDJSON, auto-discovery socket aman tanpa `/tmp` implisit + verifikasi `SO_PEERCRED` peer UID/GID, deteksi gap `seq` → `request_snapshot`, backoff eksponensial), `CommandService` (`QUuid::WithoutBraces`, mode *View-Only* terkunci default + `Unlock Controls`, alur 1 gerakan tahan 1,5 detik `request_confirm` → `panic_flatten` / `reset_kill`), serta `Notifier` (`KStatusNotifierItem` + `KNotification` saat `HAVE_KF6=1`, fallback `QSystemTrayIcon`, ikon terprogram per mode, close-to-tray, nol `PANIC` di menu tray).
+  - `desktop-ui/qml/` & `scripts/deps-arch.sh`: singleton `Theme.qml` adaptif Breeze terang/gelap (`SystemPalette` + `qqc2-desktop-style`), `ModeBanner`, `HoldToConfirmButton` (blokir pintasan 1 tombol), `RiskGauge`, `DepthLadder`, `EventList`, `CandlesChart` (`Canvas` 2D + garis `entry`/`SL`/`TP1`/`TP2`), serta 9 layar (`Cockpit`, `Positions`, `Signals`, `Market`, `Risk`, `Performance`, `Logs`, `Settings` tighten-only tanpa angka hardcode, `System`).
+  - **Tes lulus:** `./scripts/verify.sh` hijau penuh di Ubuntu 24.04 (`Qt 6.4.2`, `HAVE_KF6=0`) **dan** build `-DBOT_REQUIRE_KF6=ON` + CTest hijau penuh di container Arch Linux (`Qt 6.12.0`, `GCC 16.2.1`, `KF6StatusNotifierItem`/`KF6Notifications`/`KF6I18n` aktif, **3/3** suite CTest `tst_decimal_and_store`, `tst_ipc_uds_integration` terhadap daemon Rust nyata + restart reconnect, dan `tst_qml_smoke` 9 layar 0 warning).
+  - **Belum teruji:** Uji klik interaktif ikon tray Wayland pada desktop fisik CachyOS Plasma 6, penyatuan daemon penuh `binance-botd` + `systemd` (M13), dan `VenueSwitcher` Spot ⇄ Futures (M16); commit belum di-`git push`.

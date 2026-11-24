@@ -23,12 +23,20 @@ find_package(Qt6 REQUIRED COMPONENTS
 
 set(BOT_HAVE_KF6 0)
 if(BOT_ENABLE_KF6 OR BOT_REQUIRE_KF6)
-    if(BOT_REQUIRE_KF6)
-        find_package(KF6 REQUIRED COMPONENTS StatusNotifierItem Notifications I18n)
-    else()
-        find_package(KF6 QUIET COMPONENTS StatusNotifierItem Notifications I18n)
+    find_package(ECM QUIET NO_MODULE)
+    if(ECM_FOUND)
+        list(APPEND CMAKE_MODULE_PATH "${ECM_MODULE_PATH}")
     endif()
-    if(KF6_FOUND)
+    if(BOT_REQUIRE_KF6)
+        find_package(KF6StatusNotifierItem REQUIRED)
+        find_package(KF6Notifications REQUIRED)
+        find_package(KF6I18n REQUIRED)
+    else()
+        find_package(KF6StatusNotifierItem QUIET)
+        find_package(KF6Notifications QUIET)
+        find_package(KF6I18n QUIET)
+    endif()
+    if(KF6StatusNotifierItem_FOUND AND KF6Notifications_FOUND AND KF6I18n_FOUND)
         set(BOT_HAVE_KF6 1)
         message(STATUS "KF6 integration enabled (HAVE_KF6=1)")
     else()
@@ -129,16 +137,19 @@ target_link_libraries(tst_decimal_and_store PRIVATE
 add_test(NAME tst_decimal_and_store COMMAND tst_decimal_and_store)
 
 set(BOT_MOCK_UDS_BIN "${BOT_REPO_ROOT}/target/debug/examples/mock_uds_daemon")
-add_custom_target(build_mock_uds_daemon
-    COMMAND cargo build --manifest-path "${BOT_REPO_ROOT}/Cargo.toml" -p bot-ipc --example mock_uds_daemon
-    BYPRODUCTS "${BOT_MOCK_UDS_BIN}"
-    COMMENT "Building Rust mock_uds_daemon example for UDS integration tests"
-)
+find_program(CARGO_EXECUTABLE cargo)
 
 add_executable(tst_ipc_uds_integration
     tests/tst_ipc_uds_integration.cpp
 )
-add_dependencies(tst_ipc_uds_integration build_mock_uds_daemon)
+if(CARGO_EXECUTABLE)
+    add_custom_target(build_mock_uds_daemon
+        COMMAND "${CARGO_EXECUTABLE}" build --manifest-path "${BOT_REPO_ROOT}/Cargo.toml" -p bot-ipc --example mock_uds_daemon
+        BYPRODUCTS "${BOT_MOCK_UDS_BIN}"
+        COMMENT "Building Rust mock_uds_daemon example for UDS integration tests"
+    )
+    add_dependencies(tst_ipc_uds_integration build_mock_uds_daemon)
+endif()
 target_compile_definitions(tst_ipc_uds_integration PRIVATE
     BOT_REPO_ROOT="${BOT_REPO_ROOT}"
     BOT_MOCK_UDS_BIN="${BOT_MOCK_UDS_BIN}"
