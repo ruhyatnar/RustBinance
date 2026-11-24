@@ -554,6 +554,7 @@ name = "botd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bot-config",
  "bot-engine",
  "bot-exchange",

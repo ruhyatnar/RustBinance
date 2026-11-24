@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Binance Rust trading daemon (`binance-botd`, headless engine).
 
+mod ipc_backend;
 mod logging;
 mod sd_notify;
 
@@ -13,11 +14,11 @@ use bot_engine::EngineActor;
 use bot_exchange::VenueAdapter;
 use bot_exec::{PaperBroker, PaperBrokerConfig};
 use bot_ipc::{
-    CommandDispatcher, ConfirmNonceStore, InMemoryIpcBackend, PeerAuthPolicy, TelemetryHub,
-    UdsServerConfig, serve_uds,
+    CommandDispatcher, ConfirmNonceStore, PeerAuthPolicy, TelemetryHub, UdsServerConfig, serve_uds,
 };
 use bot_store::SqliteStore;
 use bot_types::{TradingMode, Venue};
+use ipc_backend::{EngineIpcBackend, spawn_telemetry_bridge};
 use rust_decimal::Decimal;
 use time::OffsetDateTime;
 use tracing::{info, warn};
@@ -46,6 +47,12 @@ fn parse_config_arg() -> Result<Option<PathBuf>> {
     Ok(config_path)
 }
 
+/// Resolve an optional sibling `conf.d` directory next to `config_path`.
+fn resolve_conf_d_dir(config_path: &Path) -> Option<PathBuf> {
+    let candidate = config_path.parent()?.join("conf.d");
+    candidate.is_dir().then_some(candidate)
+}
+
 /// Hard Rule #2: never allow `mode=live` without an existing `live_confirmation_file`
 /// for every enabled venue.
 fn enforce_live_confirmation_guard(cfg: &BotConfig) -> Result<()> {
@@ -69,15 +76,28 @@ fn enforce_live_confirmation_guard(cfg: &BotConfig) -> Result<()> {
     Ok(())
 }
 
+/// Refuse to silently fall back to `PaperBroker` when `mode` is `testnet` or `live`
+/// before `VenueManager` (M16) wires real exchange adapters into `botd`.
+fn enforce_supported_runtime_mode(cfg: &BotConfig) -> Result<()> {
+    if cfg.general.mode != TradingMode::Paper {
+        bail!(
+            "refusing to start binance-botd in {:?} mode: real exchange adapters are wired in M16 (VenueManager); only mode=paper is supported currently",
+            cfg.general.mode
+        );
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 async fn run_daemon(config_path: &Path) -> Result<()> {
     let cfg = load_from_paths(&ConfigSourcePaths {
         base_file: Some(config_path.to_path_buf()),
-        conf_d_dir: None,
+        conf_d_dir: resolve_conf_d_dir(config_path),
         env_prefix: Some("BOT__".to_owned()),
     })
     .with_context(|| format!("failed to load config from {}", config_path.display()))?;
     enforce_live_confirmation_guard(&cfg)?;
+    enforce_supported_runtime_mode(&cfg)?;
 
     let db_path = Path::new(&cfg.storage.db_path);
     if let Some(parent) = db_path.parent()
@@ -123,13 +143,18 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     .context("failed to bootstrap EngineActor")?;
     let (engine_handle, engine_join) = actor.spawn(event_rx);
 
-    let backend = Arc::new(InMemoryIpcBackend::new(cfg.clone()));
+    let backend = Arc::new(EngineIpcBackend::new(cfg.clone(), engine_handle.clone()));
     let dispatcher = Arc::new(CommandDispatcher::new(
         backend,
         None,
         ConfirmNonceStore::default(),
     ));
     let hub = Arc::new(TelemetryHub::new(256));
+    let telemetry_bridge = spawn_telemetry_bridge(
+        engine_handle.telemetry_rx(),
+        Arc::clone(&hub),
+        cfg.general.mode,
+    );
 
     let uds_path = PathBuf::from(&cfg.ipc.uds_path);
     let uds_handle = tokio::spawn({
@@ -181,6 +206,7 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
 
     let canceled_entries = engine_handle.shutdown(unix_now_ms()).await.unwrap_or(0);
     let _ = engine_join.await;
+    telemetry_bridge.abort();
     uds_handle.abort();
 
     info!(
@@ -227,4 +253,32 @@ fn main() -> Result<()> {
         .build()
         .context("failed to build tokio runtime")?;
     rt.block_on(run_daemon(&config_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_conf_d_dir_detects_sibling_directory() {
+        let dir = tempfile::TempDir::new().expect("tmpdir");
+        let cfg_file = dir.path().join("bot.toml");
+        assert!(resolve_conf_d_dir(&cfg_file).is_none());
+
+        let conf_d = dir.path().join("conf.d");
+        std::fs::create_dir(&conf_d).expect("mkdir conf.d");
+        assert_eq!(resolve_conf_d_dir(&cfg_file), Some(conf_d));
+    }
+
+    #[test]
+    fn enforce_supported_runtime_mode_rejects_testnet_and_live() {
+        let mut cfg = BotConfig::default();
+        assert!(enforce_supported_runtime_mode(&cfg).is_ok());
+
+        cfg.general.mode = TradingMode::Testnet;
+        assert!(enforce_supported_runtime_mode(&cfg).is_err());
+
+        cfg.general.mode = TradingMode::Live;
+        assert!(enforce_supported_runtime_mode(&cfg).is_err());
+    }
 }
