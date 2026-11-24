@@ -4,6 +4,7 @@
 
 pub mod btc_guard;
 pub mod counters;
+pub mod futures;
 pub mod gatekeeper;
 pub mod kelly;
 pub mod mode;
