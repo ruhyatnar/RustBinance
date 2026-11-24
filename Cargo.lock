@@ -529,6 +529,12 @@ dependencies = [
 [[package]]
 name = "bot-venue"
 version = "0.1.0"
+dependencies = [
+ "bot-types",
+ "proptest",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "botctl"
