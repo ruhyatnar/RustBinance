@@ -3,6 +3,7 @@
 //! and performance reporting using the production `EngineActor`, `PaperBroker`, and `Strategy` (M09).
 
 pub mod data;
+pub mod gate_report;
 pub mod metrics;
 pub mod runner;
 pub mod walk_forward;
