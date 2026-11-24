@@ -49,8 +49,8 @@ Rectangle {
         // Mode + Venue Badge (icon + text, never color alone)
         Rectangle {
             radius: 5
-            color: "rgba(15, 23, 42, 0.55)"
-            border.color: "rgba(255, 255, 255, 0.35)"
+            color: "#8c0f172a"
+            border.color: "#59ffffff"
             implicitWidth: modeLabel.implicitWidth + 16
             implicitHeight: 28
 
@@ -68,7 +68,7 @@ Rectangle {
         // Engine Mode Pill
         Rectangle {
             radius: 5
-            color: "rgba(15, 23, 42, 0.65)"
+            color: "#a60f172a"
             implicitWidth: engineLabel.implicitWidth + 16
             implicitHeight: 28
 

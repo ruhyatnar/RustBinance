@@ -79,6 +79,7 @@ qt_add_qml_module(binance-bot-qml
     RESOURCE_PREFIX /qt/qml
     QML_FILES
         qml/Theme.qml
+        qml/Main.qml
         qml/components/PanelCard.qml
         qml/components/HoldToConfirmButton.qml
         qml/components/ModeBanner.qml
@@ -86,6 +87,28 @@ qt_add_qml_module(binance-bot-qml
         qml/components/DepthLadder.qml
         qml/components/EventList.qml
         qml/components/CandlesChart.qml
+        qml/pages/CockpitPage.qml
+        qml/pages/PositionsPage.qml
+        qml/pages/SignalsPage.qml
+        qml/pages/MarketPage.qml
+        qml/pages/RiskPage.qml
+        qml/pages/PerformancePage.qml
+        qml/pages/LogsPage.qml
+        qml/pages/SettingsPage.qml
+        qml/pages/SystemPage.qml
+)
+
+add_executable(binance-bot-ui
+    src/main.cpp
+)
+target_compile_options(binance-bot-ui PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(binance-bot-ui PRIVATE
+    binance-bot-ui-core
+    binance-bot-qml
+    binance-bot-qmlplugin
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
 )
 
 enable_testing()
@@ -126,3 +149,22 @@ target_link_libraries(tst_ipc_uds_integration PRIVATE
     Qt6::Test
 )
 add_test(NAME tst_ipc_uds_integration COMMAND tst_ipc_uds_integration)
+
+add_executable(tst_qml_smoke
+    tests/tst_qml_smoke.cpp
+)
+target_compile_definitions(tst_qml_smoke PRIVATE
+    BOT_REPO_ROOT="${BOT_REPO_ROOT}"
+    BOT_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml"
+)
+target_compile_options(tst_qml_smoke PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(tst_qml_smoke PRIVATE
+    binance-bot-ui-core
+    binance-bot-qml
+    binance-bot-qmlplugin
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Test
+)
+add_test(NAME tst_qml_smoke COMMAND tst_qml_smoke)
