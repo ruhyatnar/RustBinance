@@ -80,7 +80,8 @@ async fn handle_uds_connection<B: IpcBackend>(
     };
     let uid = cred.uid();
     let gid = cred.gid();
-    if !peer_auth.is_allowed(uid, gid) {
+    let supp_gids = crate::auth::peer_supplementary_groups(cred.pid());
+    if !peer_auth.is_allowed_with_groups(uid, gid, &supp_gids) {
         warn!(uid, gid, "rejected unauthorized UDS peer");
         return;
     }

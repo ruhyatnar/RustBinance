@@ -270,8 +270,52 @@ impl PeerAuthPolicy {
     /// Check whether a UDS peer with `(uid, gid)` is authorized.
     #[must_use]
     pub fn is_allowed(&self, user_id: u32, group_id: u32) -> bool {
-        self.allowed_uids.contains(&user_id) || self.allowed_gids.contains(&group_id)
+        self.is_allowed_with_groups(user_id, group_id, &[])
     }
+
+    /// Check whether a UDS peer with `(uid, primary_gid, supplementary_gids)` is authorized.
+    #[must_use]
+    pub fn is_allowed_with_groups(
+        &self,
+        user_id: u32,
+        primary_gid: u32,
+        supplementary_gids: &[u32],
+    ) -> bool {
+        self.allowed_uids.contains(&user_id)
+            || self.allowed_gids.contains(&primary_gid)
+            || supplementary_gids
+                .iter()
+                .any(|gid| self.allowed_gids.contains(gid))
+    }
+}
+
+/// Parse the `Groups:` line from Linux `/proc/<pid>/status` contents (zero `unsafe`).
+#[must_use]
+pub fn parse_proc_status_groups(status_contents: &str) -> Vec<u32> {
+    for line in status_contents.lines() {
+        if let Some(rest) = line.strip_prefix("Groups:") {
+            return rest
+                .split_whitespace()
+                .filter_map(|tok| tok.parse::<u32>().ok())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// Read supplementary group IDs of a Linux peer process via `/proc/<pid>/status` (zero `unsafe`).
+///
+/// Returns an empty `Vec` if `pid` is `None`, non-positive, or `/proc/<pid>/status` cannot be read.
+#[must_use]
+pub fn peer_supplementary_groups(pid: Option<i32>) -> Vec<u32> {
+    let Some(raw_pid) = pid.filter(|&p| p > 0) else {
+        return Vec::new();
+    };
+    let path = format!("/proc/{raw_pid}/status");
+    let Ok(status) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    parse_proc_status_groups(&status)
 }
 
 /// Read current process EUID and EGID on Linux via `/proc/self/status` (zero `unsafe`).
@@ -296,4 +340,30 @@ fn current_process_euid_egid() -> (Option<u32>, Option<u32>) {
         }
     }
     (eff_user, eff_group)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_proc_status_groups_extracts_all_gids() {
+        let sample = "Name:\tbotctl\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t10 998 1000 \n";
+        assert_eq!(parse_proc_status_groups(sample), vec![10, 998, 1000]);
+    }
+
+    #[test]
+    fn peer_auth_allows_matching_supplementary_group() {
+        let policy = PeerAuthPolicy::new([999], [998]);
+        assert!(!policy.is_allowed(1000, 1000));
+        assert!(policy.is_allowed_with_groups(1000, 1000, &[10, 998]));
+        assert!(!policy.is_allowed_with_groups(1000, 1000, &[10, 1000]));
+    }
+
+    #[test]
+    fn peer_supplementary_groups_handles_missing_or_invalid_pid() {
+        assert_eq!(peer_supplementary_groups(None), Vec::<u32>::new());
+        assert_eq!(peer_supplementary_groups(Some(0)), Vec::<u32>::new());
+        assert_eq!(peer_supplementary_groups(Some(-1)), Vec::<u32>::new());
+    }
 }
