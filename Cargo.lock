@@ -571,6 +571,7 @@ dependencies = [
  "bot-risk",
  "bot-store",
  "bot-types",
+ "bot-venue",
  "rust_decimal",
  "serde_json",
  "tempfile",

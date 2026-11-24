@@ -18,7 +18,7 @@ use crate::nonce::{ConfirmNonceStore, unix_now_ms};
 use crate::protocol::{
     CommandKind, CommandPayload, CommandResultPayload, ConfirmAction, EngineSummary, HelloPayload,
     KlineBar, PROTOCOL_VERSION, RateStatus, RiskLimitsSummary, RiskSummary, SnapshotPayload,
-    TradeRecord, VenuesSummary,
+    OnOpenPositionsArg, TradeRecord, VenuesSummary,
 };
 
 /// Maximum cached `cmd_id` results retained for idempotency.
@@ -51,6 +51,17 @@ pub trait IpcBackend: Send + Sync + 'static {
     async fn reset_kill(&self) -> Result<String, IpcError>;
     /// Acknowledge an operator alert by ID.
     async fn ack_alert(&self, id: &str) -> Result<String, IpcError>;
+    /// Atomically switch active venue (`Spot <-> UsdsFutures`, §3.5, §10.1).
+    async fn switch_venue(
+        &self,
+        _target: Venue,
+        _policy: OnOpenPositionsArg,
+        _actor: &str,
+    ) -> Result<String, IpcError> {
+        Err(IpcError::NotSupported(
+            "switch_venue backend not configured".to_owned(),
+        ))
+    }
     /// Query recent executed trades filtered by optional `venue` and UTC millisecond range.
     async fn list_trades(
         &self,
@@ -203,16 +214,35 @@ impl<B: IpcBackend> CommandDispatcher<B> {
         match payload.cmd {
             CommandKind::Pause => Self::from_result(cmd_id, self.backend.pause().await),
             CommandKind::Resume => Self::from_result(cmd_id, self.backend.resume().await),
-            CommandKind::SwitchVenue { .. } => {
-                // Intentionally stubbed until M16 (VenueManager & Spot ⇄ Futures switching).
-                CommandResultPayload {
-                    cmd_id,
-                    ok: false,
-                    code: "not_supported".to_owned(),
-                    message: "switch_venue is not supported until M16".to_owned(),
-                    confirm_nonce: None,
-                    expires_at_ms: None,
+            CommandKind::SwitchVenue {
+                target,
+                on_open_positions,
+                confirm_nonce,
+            } => {
+                if on_open_positions == OnOpenPositionsArg::Flatten {
+                    if confirm_nonce.trim().is_empty() {
+                        return CommandResultPayload {
+                            cmd_id,
+                            ok: false,
+                            code: "invalid_confirm_nonce".to_owned(),
+                            message: "flatten policy requires confirm_nonce".to_owned(),
+                            confirm_nonce: None,
+                            expires_at_ms: None,
+                        };
+                    }
+                    if let Err(err) =
+                        self.nonces
+                            .consume(&confirm_nonce, ConfirmAction::SwitchVenue, principal)
+                    {
+                        return Self::from_result(cmd_id, Err(err));
+                    }
                 }
+                Self::from_result(
+                    cmd_id,
+                    self.backend
+                        .switch_venue(target, on_open_positions, principal)
+                        .await,
+                )
             }
             CommandKind::SetParam { key, value } => {
                 Self::from_result(cmd_id, self.backend.set_param(&key, &value).await)

@@ -11,7 +11,7 @@ use bot_ipc::protocol::{
 };
 use bot_ipc::{IpcBackend, IpcError, TelemetryHub};
 use bot_risk::ModeTrigger;
-use bot_types::{EngineMode, TradingMode, VenueState};
+use bot_types::{EngineMode, TradingMode};
 use rust_decimal::Decimal;
 use time::OffsetDateTime;
 use tokio::sync::watch;
@@ -42,21 +42,11 @@ impl EngineIpcBackend {
     }
 
     fn build_snapshot(&self, snap: &TelemetrySnapshot) -> SnapshotPayload {
-        let spot_state = if self.config.venues.spot.enabled {
-            VenueState::Active
-        } else {
-            VenueState::Disabled
-        };
-        let futures_state = if self.config.venues.futures.enabled {
-            VenueState::Active
-        } else {
-            VenueState::Disabled
-        };
         SnapshotPayload {
             venues: VenuesSummary {
                 active: snap.venue,
-                spot: spot_state,
-                futures: futures_state,
+                spot: snap.spot_state,
+                futures: snap.futures_state,
                 last_switch_ms: 0,
                 switches_today: 0,
             },
@@ -190,6 +180,29 @@ impl IpcBackend for EngineIpcBackend {
 
     async fn ack_alert(&self, id: &str) -> Result<String, IpcError> {
         Ok(format!("alert '{id}' acknowledged"))
+    }
+
+    async fn switch_venue(
+        &self,
+        target: bot_types::Venue,
+        policy: bot_ipc::protocol::OnOpenPositionsArg,
+        actor: &str,
+    ) -> Result<String, IpcError> {
+        let mapped = match policy {
+            bot_ipc::protocol::OnOpenPositionsArg::Drain => bot_venue::SwitchPolicy::KeepManaging,
+            bot_ipc::protocol::OnOpenPositionsArg::Refuse => bot_venue::SwitchPolicy::RequireFlat,
+            bot_ipc::protocol::OnOpenPositionsArg::Flatten => bot_venue::SwitchPolicy::Flatten,
+        };
+        let report = self
+            .handle
+            .switch_venue(target, mapped, actor.to_owned(), unix_now_ms())
+            .await
+            .map_err(|err| IpcError::BadRequest(err.to_string()))?
+            .map_err(IpcError::BadRequest)?;
+        Ok(format!(
+            "switched {:?} -> {:?} (old venue {:?}, canceled {} entry orders)",
+            report.from, report.to, report.old_venue_state, report.canceled_entry_orders
+        ))
     }
 }
 
