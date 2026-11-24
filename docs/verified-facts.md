@@ -177,3 +177,25 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Diverifikasi: 2026-11-24 oleh agen
 - Dampak ke spec: diterapkan pada `packaging/binance-botd.service` (memenuhi §12.4 dengan skor eksposur `1.3 OK`).
 
+
+## USDⓈ-M Futures Lampiran B (butir 6, 11–16): Setup Akun, Bracket/Likuidasi, Rate Limit `/fapi`, Commission, Countdown, & ADL   (milestone: M15)
+- Fakta:
+  - **Position Mode, Margin Type, Leverage, Multi-Assets (butir 11):**
+    - `GET/POST /fapi/v1/positionSide/dual` (`dualSidePosition: bool`, `false` = One-way).
+    - `POST /fapi/v1/marginType` (`symbol`, `marginType`: `ISOLATED` | `CROSSED`).
+    - `POST /fapi/v1/leverage` (`symbol`, `leverage`: integer 1..=125).
+    - `GET/POST /fapi/v1/multiAssetsMargin` (`multiAssetsMargin: bool`, `false` = Single-Asset).
+    - `GET /fapi/v2/positionRisk` (`symbol`, `positionAmt`, `marginType`, `leverage`, `liquidationPrice`, `markPrice`, `isolatedMargin`).
+  - **Algo Order WS API vs REST (butir 12):** Tersedia di WS API (`/algoOrder.place`, `/algoOrder.cancel`) dan REST (`POST/DELETE/GET /fapi/v1/algoOrder`, `GET /fapi/v1/openAlgoOrders`). Parameter kunci: `algoType` (`CONDITIONAL`), `type` (`STOP_MARKET`, `TAKE_PROFIT_MARKET`, `TRAILING_STOP_MARKET`), `triggerPrice`, `workingType` (`MARK_PRICE` | `CONTRACT_PRICE`), `closePosition` (`true`/`false`), `reduceOnly`, `activatePrice`, `callbackRate`, `clientAlgoId` (maks 36 char).
+  - **Leverage Bracket & Estimasi Likuidasi `ISOLATED` (butir 13):** `GET /fapi/v1/leverageBracket` mengembalikan `brackets[]` berisi `bracket`, `initialLeverage`, `notionalCap`, `notionalFloor`, `maintMarginRatio` (MMR), `cum`. Estimasi konservatif harga likuidasi `ISOLATED` untuk satu posisi:
+    - Long: `liq = entry * (1 - 1/leverage + maintMarginRatio)` (dengan `liq < entry`).
+    - Short: `liq = entry * (1 + 1/leverage - maintMarginRatio)` (dengan `liq > entry`).
+  - **Event User Data Futures (butir 14):** `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, `ALGO_UPDATE`, `MARGIN_CALL`, `ACCOUNT_CONFIG_UPDATE`, `listenKeyExpired` via `listenKey` (`/fapi/v1/listenKey` atau WS `/userDataStream.start`/`ping`/`stop`).
+  - **Rate Limit `/fapi` (butir 6 & 15):** Terpisah dari Spot (`REQUEST_WEIGHT` per menit & `ORDERS` per 10s/1m di `exchangeInfo.rateLimits`, header respons `X-MBX-USED-WEIGHT-1M` dan `X-MBX-ORDER-COUNT-10S`/`1M`).
+  - **Commission, Countdown Cancel All, & ADL (butir 16):**
+    - `GET /fapi/v1/commissionRate` (`symbol` → `makerCommissionRate`, `takerCommissionRate`).
+    - `POST /fapi/v1/countdownCancelAll` (`symbol`, `countdownTime` ms; `0` menonaktifkan dead-man's switch).
+    - `GET /fapi/v1/adlQuantile` & `GET /fapi/v1/symbolAdlRisk` (indikator kuantil ADL 0..=4).
+- Sumber: `binance-docs/FUTURES_REST.yaml`, `binance-docs/FUTURES_WS.yaml`, `binance-docs/FUTURES_WSS.yaml`
+- Diverifikasi: 2026-11-24 oleh agen
+- Dampak ke spec: tidak ada (sesuai §4.5 dan §7.8).
