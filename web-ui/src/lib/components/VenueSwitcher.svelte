@@ -50,9 +50,9 @@
 			</button>
 			<button
 				type="button"
-				class:active={venues.active === 'usds_futures'}
+				class:active={venues.active === 'futures'}
 				data-testid="venue-btn-futures"
-				onclick={() => onRequestSwitch?.('usds_futures')}
+				onclick={() => onRequestSwitch?.('futures')}
 			>
 				FUTURES <span class="badge">{venues.futures} {stateBadge(venues.futures)}</span>
 				<span class="meta">ISOLATED · maks 3×</span>
