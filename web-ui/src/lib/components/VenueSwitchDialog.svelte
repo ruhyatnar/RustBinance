@@ -43,7 +43,7 @@
 			<h3>Alihkan Venue: {currentVenue} → {targetVenue}</h3>
 			<p>Posisi terbuka saat ini: <strong>{openPositionsCount}</strong> (PnL: {openPnlUsd} USD)</p>
 
-			{#if targetVenue === 'UsdsFutures'}
+			{#if targetVenue === 'usds_futures'}
 				<p class="notice">Futures: ISOLATED · maks 3× · mendukung Short · funding & likuidasi aktif.</p>
 			{/if}
 

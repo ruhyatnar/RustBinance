@@ -42,17 +42,17 @@
 		<div class="segmented" role="group" aria-label="Venue Switcher">
 			<button
 				type="button"
-				class:active={venues.active === 'Spot'}
+				class:active={venues.active === 'spot'}
 				data-testid="venue-btn-spot"
-				onclick={() => onRequestSwitch?.('Spot')}
+				onclick={() => onRequestSwitch?.('spot')}
 			>
 				SPOT <span class="badge">{venues.spot} {stateBadge(venues.spot)}</span>
 			</button>
 			<button
 				type="button"
-				class:active={venues.active === 'UsdsFutures'}
+				class:active={venues.active === 'usds_futures'}
 				data-testid="venue-btn-futures"
-				onclick={() => onRequestSwitch?.('UsdsFutures')}
+				onclick={() => onRequestSwitch?.('usds_futures')}
 			>
 				FUTURES <span class="badge">{venues.futures} {stateBadge(venues.futures)}</span>
 				<span class="meta">ISOLATED · maks 3×</span>
