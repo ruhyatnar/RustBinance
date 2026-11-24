@@ -47,6 +47,9 @@ add_library(binance-bot-ui-core STATIC
     src/IpcClient.cpp
     src/CommandService.h
     src/CommandService.cpp
+    src/Notifier.h
+    src/Notifier.cpp
+    resources/resources.qrc
 )
 
 target_include_directories(binance-bot-ui-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -65,6 +68,25 @@ if(BOT_HAVE_KF6)
         KF6::I18n
     )
 endif()
+
+set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
+qt_add_qml_module(binance-bot-qml
+    URI BinanceBot
+    VERSION 1.0
+    STATIC
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/BinanceBot"
+    RESOURCE_PREFIX /qt/qml
+    QML_FILES
+        qml/Theme.qml
+        qml/components/PanelCard.qml
+        qml/components/HoldToConfirmButton.qml
+        qml/components/ModeBanner.qml
+        qml/components/RiskGauge.qml
+        qml/components/DepthLadder.qml
+        qml/components/EventList.qml
+        qml/components/CandlesChart.qml
+)
 
 enable_testing()
 

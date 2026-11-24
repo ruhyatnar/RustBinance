@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/knotifications6">
+        <file>binance-bot-ui.notifyrc</file>
+    </qresource>
+</RCC>

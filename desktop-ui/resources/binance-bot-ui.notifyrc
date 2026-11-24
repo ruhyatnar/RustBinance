@@ -1,0 +1,9 @@
+[Global]
+IconName=dialog-information
+Comment=Binance Rust Trading Bot Cockpit
+Name=Binance Trading Bot
+
+[Event/botAlert]
+Name=Trading Bot Alert
+Comment=Important risk, fill, or engine state alert from binance-botd
+Action=Popup

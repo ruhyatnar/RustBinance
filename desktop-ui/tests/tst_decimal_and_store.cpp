@@ -5,8 +5,11 @@
 #include <QSignalSpy>
 #include <QtTest>
 
+#include "CommandService.h"
 #include "DecimalFormat.h"
+#include "IpcClient.h"
 #include "Models.h"
+#include "Notifier.h"
 #include "StateStore.h"
 
 namespace {
@@ -132,6 +135,29 @@ private slots:
         snap2.insert(QStringLiteral("seq"), 2);
         QCOMPARE(store.applyEnvelope(snap2), botui::EnvelopeOutcome::Ok);
         QCOMPARE(notifSpy.count(), 1);
+    }
+
+    void notifierTrayMenuExcludesPanicAndIsSilentOffscreen() {
+        botui::StateStore store;
+        botui::IpcClient client(&store);
+        botui::CommandService commands(&store, &client);
+        botui::Notifier notifier(&store, &commands);
+
+        // Under QT_QPA_PLATFORM=offscreen, Notifier must silently disable system tray
+        QCOMPARE(notifier.hasSystemTray(), false);
+
+        // Programmatic icons must render non-null 64x64 pixmaps for all 3 build modes
+        QVERIFY(!botui::Notifier::renderModeIcon(QStringLiteral("paper"), QStringLiteral("Ready")).isNull());
+        QVERIFY(!botui::Notifier::renderModeIcon(QStringLiteral("testnet"), QStringLiteral("Paused")).isNull());
+        QVERIFY(!botui::Notifier::renderModeIcon(QStringLiteral("live"), QStringLiteral("Killed")).isNull());
+
+        // Tray menu labels must NEVER contain PANIC (§11.4)
+        const QStringList labels = notifier.menuActionLabels();
+        QVERIFY(!labels.isEmpty());
+        for (const QString& label : labels) {
+            QVERIFY2(!label.contains(QStringLiteral("panic"), Qt::CaseInsensitive),
+                     qPrintable(QStringLiteral("Forbidden PANIC action in tray menu: ") + label));
+        }
     }
 };
 
