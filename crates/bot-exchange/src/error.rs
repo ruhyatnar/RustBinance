@@ -168,6 +168,10 @@ pub enum GatewayError {
     #[error("websocket transport error: {0}")]
     Transport(String),
 
+    /// Operation is not supported on this venue (e.g. Algo orders on Spot or OCO on Futures).
+    #[error("unsupported operation for venue: {0}")]
+    Unsupported(String),
+
     /// Underlying HTTP/REST transport error.
     #[error("http transport error: {0}")]
     Http(String),

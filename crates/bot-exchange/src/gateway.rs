@@ -42,16 +42,19 @@ pub enum TimeInForce {
     Ioc,
     /// Fill-Or-Kill.
     Fok,
+    /// Good-Til-Crossing (Futures Post-Only).
+    Gtx,
 }
 
 impl TimeInForce {
-    /// Wire representation expected by Binance Spot API.
+    /// Wire representation expected by Binance API.
     #[must_use]
     pub const fn as_binance_str(self) -> &'static str {
         match self {
             Self::Gtc => "GTC",
             Self::Ioc => "IOC",
             Self::Fok => "FOK",
+            Self::Gtx => "GTX",
         }
     }
 }
@@ -546,6 +549,143 @@ pub trait ExchangeGateway: Send + Sync {
 
     /// Fetch exchange info and symbol filter rules (`exchangeInfo`).
     async fn exchange_info(&self) -> Result<ExchangeInfoSnapshot, GatewayError>;
+
+    /// Place a USDⓈ-M Futures conditional Algo order (`/algoOrder.place` or `/fapi/v1/algoOrder`).
+    ///
+    /// Default implementation returns [`GatewayError::Unsupported`] (used by Spot).
+    async fn place_algo_order(
+        &self,
+        _req: PlaceAlgoOrderRequest,
+    ) -> Result<AlgoOrderAck, GatewayError> {
+        Err(GatewayError::Unsupported(
+            "place_algo_order is only supported on Futures venues".into(),
+        ))
+    }
+
+    /// Cancel a USDⓈ-M Futures conditional Algo order (`/algoOrder.cancel` or `/fapi/v1/algoOrder`).
+    ///
+    /// Default implementation returns [`GatewayError::Unsupported`] (used by Spot).
+    async fn cancel_algo_order(
+        &self,
+        _req: CancelAlgoOrderRequest,
+    ) -> Result<CancelAlgoOrderAck, GatewayError> {
+        Err(GatewayError::Unsupported(
+            "cancel_algo_order is only supported on Futures venues".into(),
+        ))
+    }
+}
+
+/// Conditional Algo order type for USDⓈ-M Futures (§4.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AlgoOrderType {
+    /// Market stop-loss (`STOP_MARKET`).
+    StopMarket,
+    /// Market take-profit (`TAKE_PROFIT_MARKET`).
+    TakeProfitMarket,
+    /// Trailing stop market (`TRAILING_STOP_MARKET`).
+    TrailingStopMarket,
+}
+
+impl AlgoOrderType {
+    /// Wire representation expected by Binance Futures Algo API.
+    #[must_use]
+    pub const fn as_binance_str(self) -> &'static str {
+        match self {
+            Self::StopMarket => "STOP_MARKET",
+            Self::TakeProfitMarket => "TAKE_PROFIT_MARKET",
+            Self::TrailingStopMarket => "TRAILING_STOP_MARKET",
+        }
+    }
+}
+
+/// Price reference used to trigger conditional Futures Algo orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WorkingType {
+    /// Trigger on Mark Price (recommended to avoid wick-driven stop hunts).
+    MarkPrice,
+    /// Trigger on Last/Contract Price.
+    ContractPrice,
+}
+
+impl WorkingType {
+    /// Wire representation expected by Binance Futures Algo API.
+    #[must_use]
+    pub const fn as_binance_str(self) -> &'static str {
+        match self {
+            Self::MarkPrice => "MARK_PRICE",
+            Self::ContractPrice => "CONTRACT_PRICE",
+        }
+    }
+}
+
+/// Request to place a USDⓈ-M Futures conditional Algo order (`/algoOrder.place`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceAlgoOrderRequest {
+    /// Target symbol.
+    pub symbol: Symbol,
+    /// Closing side (`Sell` for Long position, `Buy` for Short position).
+    pub side: Side,
+    /// Conditional order type (`StopMarket`, `TakeProfitMarket`, `TrailingStopMarket`).
+    pub order_type: AlgoOrderType,
+    /// Deterministic client algo ID (`clientAlgoId`, 1..=36 chars).
+    pub client_algo_id: String,
+    /// Quantity (required when `close_position == false`).
+    pub quantity: Option<Qty>,
+    /// Trigger price (required for `StopMarket` and `TakeProfitMarket`).
+    pub trigger_price: Option<Price>,
+    /// Activation price (optional for `TrailingStopMarket`).
+    pub activate_price: Option<Price>,
+    /// Callback rate in percent (0.1..=5.0, required for `TrailingStopMarket`).
+    pub callback_rate: Option<Decimal>,
+    /// Trigger price source (`MarkPrice` or `ContractPrice`).
+    pub working_type: WorkingType,
+    /// Close entire position when triggered (`closePosition=true`; mutually exclusive with `quantity`).
+    pub close_position: bool,
+    /// Reduce-only flag (`reduceOnly=true`; required for partial TP/trailing).
+    pub reduce_only: bool,
+    /// Enable Binance price protection (`priceProtect=true`).
+    pub price_protect: bool,
+}
+
+/// Acknowledgment for a newly placed Futures Algo order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlgoOrderAck {
+    /// Venue (`Venue::UsdsFutures`).
+    pub venue: Venue,
+    /// Symbol.
+    pub symbol: Symbol,
+    /// Exchange numeric algo ID (`algoId`).
+    pub algo_id: i64,
+    /// Client algo ID echoed by exchange.
+    pub client_algo_id: String,
+    /// Order status string (e.g. `"NEW"`).
+    pub status: String,
+    /// Transaction timestamp (UTC ms).
+    pub transact_time_ms: i64,
+}
+
+/// Request to cancel an open Futures Algo order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelAlgoOrderRequest {
+    /// Symbol.
+    pub symbol: Symbol,
+    /// Client algo ID (`clientAlgoId`).
+    pub client_algo_id: Option<String>,
+    /// Exchange numeric algo ID (`algoId`).
+    pub algo_id: Option<i64>,
+}
+
+/// Acknowledgment for a canceled Futures Algo order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelAlgoOrderAck {
+    /// Venue (`Venue::UsdsFutures`).
+    pub venue: Venue,
+    /// Symbol.
+    pub symbol: Symbol,
+    /// Exchange numeric algo ID.
+    pub algo_id: i64,
+    /// Client algo ID.
+    pub client_algo_id: String,
 }
 
 /// Venue lifecycle adapter extending [`ExchangeGateway`] (§3.5).
@@ -566,7 +706,7 @@ pub trait VenueAdapter: ExchangeGateway + Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_client_order_id;
+    use super::{AlgoOrderType, TimeInForce, WorkingType, validate_client_order_id};
 
     #[test]
     fn validates_client_order_id_format() {
@@ -575,5 +715,24 @@ mod tests {
         assert!(validate_client_order_id("").is_err());
         assert!(validate_client_order_id(&"a".repeat(37)).is_err());
         assert!(validate_client_order_id("bad id!").is_err());
+    }
+
+    #[test]
+    fn futures_wire_enums_match_binance_spec() {
+        assert_eq!(TimeInForce::Gtx.as_binance_str(), "GTX");
+        assert_eq!(AlgoOrderType::StopMarket.as_binance_str(), "STOP_MARKET");
+        assert_eq!(
+            AlgoOrderType::TakeProfitMarket.as_binance_str(),
+            "TAKE_PROFIT_MARKET"
+        );
+        assert_eq!(
+            AlgoOrderType::TrailingStopMarket.as_binance_str(),
+            "TRAILING_STOP_MARKET"
+        );
+        assert_eq!(WorkingType::MarkPrice.as_binance_str(), "MARK_PRICE");
+        assert_eq!(
+            WorkingType::ContractPrice.as_binance_str(),
+            "CONTRACT_PRICE"
+        );
     }
 }
