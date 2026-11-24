@@ -4,6 +4,7 @@
 
 pub mod btc_guard;
 pub mod counters;
+pub mod cross_venue;
 pub mod futures;
 pub mod gatekeeper;
 pub mod kelly;
@@ -12,8 +13,9 @@ pub mod sizing;
 
 pub use btc_guard::{
     BTC_GUARD_MIN_ACTIVE_MS, BTC_GUARD_NO_NEW_LOW_RELEASE_MS, BTC_GUARD_RETRIGGER_COOLDOWN_MS,
-    BtcCrashGuard, BtcGuardAction, BtcMarketSample,
+    BtcCrashGuard, BtcGuardAction, BtcMarketSample, BtcSpikeGuard, BtcSpikeSample,
 };
+pub use cross_venue::{CrossVenueBudget, CrossVenuePosition, CrossVenueSameSymbolPolicy};
 pub use counters::{
     CombinedEquityCounters, EquityCheckOutcome, ModeTriggerKind, PROFIT_LOCK_REDUCE_TRIGGER_PCT,
     PROFIT_LOCK_STOP_TRIGGER_PCT,
