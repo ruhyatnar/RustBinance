@@ -10,6 +10,12 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ ! -x "$ROOT/target/release/binance-botd" ] || [ ! -x "$ROOT/target/release/binance-botctl" ]; then
+  echo "ERROR: Binary release belum ditemukan di $ROOT/target/release/." >&2
+  echo "Jalankan ./scripts/build.sh terlebih dahulu (sebagai user biasa, tanpa sudo)." >&2
+  exit 1
+fi
+
 SVC="${BOT_SVC_USER:-binancebot}"
 CONF="${BOT_CONF_DIR:-/etc/binance-bot}"
 DATA="${BOT_DATA_DIR:-/var/lib/binance-bot}"
@@ -18,8 +24,16 @@ WEB_DIR="${BOT_WEB_DIR:-/usr/share/binance-bot/web}"
 SYSTEMD_DIR="${BOT_SYSTEMD_DIR:-/etc/systemd/system}"
 DESKTOP_DIR="${BOT_DESKTOP_DIR:-/usr/share/applications}"
 
+NOLOGIN_SHELL="$(command -v nologin 2>/dev/null || true)"
+if [ -z "$NOLOGIN_SHELL" ]; then
+  if [ -x /usr/sbin/nologin ]; then NOLOGIN_SHELL="/usr/sbin/nologin"
+  elif [ -x /usr/bin/nologin ]; then NOLOGIN_SHELL="/usr/bin/nologin"
+  else NOLOGIN_SHELL="/bin/false"
+  fi
+fi
+
 id -u "$SVC" &>/dev/null || useradd --system --home-dir "$DATA" \
-  --create-home --shell /usr/bin/nologin "$SVC"
+  --create-home --shell "$NOLOGIN_SHELL" "$SVC"
 
 if [ -n "${SUDO_USER:-}" ] && id -u "$SUDO_USER" &>/dev/null; then
   usermod -aG "$SVC" "$SUDO_USER"
@@ -63,6 +77,10 @@ install -m 0644 "$ROOT/packaging/binance-trading-bot.desktop" "$DESKTOP_DIR/"
 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
   systemctl daemon-reload
+else
+  echo "INFO: systemd tidak aktif di host ini. Untuk distro non-systemd, jalankan daemon secara manual:"
+  echo "  sudo -u $SVC $BIN_DIR/binance-botd --config $CONF/bot.toml"
+  echo "  (atau gunakan packaging/Dockerfile & packaging/compose.yaml)"
 fi
 
 cat <<MSG

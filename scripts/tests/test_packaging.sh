@@ -62,11 +62,28 @@ test_deps_unsupported_manager() {
   grep -qi "unsupported" <<<"$err"
 }
 
+test_install_syntax() {
+  bash -n "$ROOT/scripts/install-system.sh"
+}
+
+test_install_no_hardcoded_nologin() {
+  ! grep -q -- "--shell /usr/bin/nologin" "$ROOT/scripts/install-system.sh"
+  grep -q 'NOLOGIN_SHELL' "$ROOT/scripts/install-system.sh"
+}
+
+test_install_preflight_binaries_check() {
+  grep -q 'target/release/binance-botd' "$ROOT/scripts/install-system.sh"
+  grep -q 'scripts/build.sh' "$ROOT/scripts/install-system.sh"
+}
+
 assert_ok "test_deps_syntax" test_deps_syntax
 assert_ok "test_deps_dry_run_all_managers" test_deps_dry_run_all_managers
 assert_ok "test_deps_headless_skips_qt" test_deps_headless_skips_qt
 assert_fail "test_deps_unsupported_manager_exits_nonzero" env BOT_PKG_MGR=none bash "$ROOT/scripts/deps.sh" --dry-run
 assert_ok "test_deps_unsupported_manager_message" test_deps_unsupported_manager
+assert_ok "test_install_syntax" test_install_syntax
+assert_ok "test_install_no_hardcoded_nologin" test_install_no_hardcoded_nologin
+assert_ok "test_install_preflight_binaries_check" test_install_preflight_binaries_check
 
 echo "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
