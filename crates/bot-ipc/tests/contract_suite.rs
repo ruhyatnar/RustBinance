@@ -12,9 +12,10 @@ use std::path::PathBuf;
 
 use bot_ipc::protocol::{
     AlertLevel, AlertView, ClientMessage, CommandKind, CommandPayload, CommandResultPayload,
-    ConfirmAction, DeltaPayload, EngineSummary, EventPayload, HeartbeatPayload, HelloPayload,
-    HttpErrorResponse, MarketPayload, MarketTickSummary, OnOpenPositionsArg, PROTOCOL_VERSION,
-    PositionView, RateStatus, RiskLimitsSummary, RiskSummary, ServerMessage, SnapshotPayload,
+    ConfirmAction, DeltaPayload, EngineSummary, EventPayload, GetKlinesPayload, GetTradesPayload,
+    HeartbeatPayload, HelloPayload, HttpErrorResponse, KlineBar, KlinesPayload, MarketPayload,
+    MarketTickSummary, OnOpenPositionsArg, PROTOCOL_VERSION, PositionView, RateStatus,
+    RiskLimitsSummary, RiskSummary, ServerMessage, SnapshotPayload, TradeRecord, TradesPayload,
     VenuesSummary, WireEnvelope,
 };
 use bot_types::{EngineMode, TradingMode, Venue, VenueState};
@@ -54,6 +55,8 @@ fn ui_fixtures_validate_against_schema_and_roundtrip_rust() {
         "heartbeat.json",
         "command_result.json",
         "command_pause.json",
+        "klines.json",
+        "trades.json",
     ];
 
     for file in envelope_files {
@@ -241,6 +244,42 @@ fn all_rust_protocol_messages_conform_to_json_schema() {
                 expires_at_ms: None,
             }),
         ),
+        WireEnvelope::server(
+            8,
+            1_790_000_001_200,
+            ServerMessage::Klines(KlinesPayload {
+                req_id: Uuid::now_v7(),
+                venue: Venue::Spot,
+                symbol: "BTCUSDT".to_owned(),
+                tf: "15m".to_owned(),
+                klines: vec![KlineBar {
+                    time: 1_790_000_000,
+                    open: dec("68000.00"),
+                    high: dec("68200.00"),
+                    low: dec("67950.00"),
+                    close: dec("68120.50"),
+                    volume: dec("12.50"),
+                }],
+            }),
+        ),
+        WireEnvelope::server(
+            9,
+            1_790_000_001_300,
+            ServerMessage::Trades(TradesPayload {
+                req_id: Uuid::now_v7(),
+                venue: Some(Venue::Spot),
+                trades: vec![TradeRecord {
+                    venue: Venue::Spot,
+                    symbol: "ETHUSDT".to_owned(),
+                    side: "BUY".to_owned(),
+                    price: dec("3120.40"),
+                    qty: dec("0.320"),
+                    fee: dec("0.9985"),
+                    realized_pnl: dec("21.66"),
+                    ts_ms: 1_789_995_000_000,
+                }],
+            }),
+        ),
     ];
 
     for msg in server_messages {
@@ -296,6 +335,37 @@ fn all_rust_protocol_messages_conform_to_json_schema() {
         assert!(
             validator.is_valid(&val),
             "command failed schema validation: {val}"
+        );
+    }
+
+    let query_messages = vec![
+        WireEnvelope::client(
+            20,
+            1_790_000_002_100,
+            ClientMessage::GetKlines(GetKlinesPayload {
+                req_id: Uuid::now_v7(),
+                venue: Venue::Spot,
+                symbol: "BTCUSDT".to_owned(),
+                tf: "15m".to_owned(),
+                limit: 20,
+            }),
+        ),
+        WireEnvelope::client(
+            21,
+            1_790_000_002_200,
+            ClientMessage::GetTrades(GetTradesPayload {
+                req_id: Uuid::now_v7(),
+                venue: Some(Venue::Spot),
+                from_ms: Some(1_789_000_000_000),
+                to_ms: None,
+            }),
+        ),
+    ];
+    for qm in query_messages {
+        let val = serde_json::to_value(&qm).expect("serialize query message");
+        assert!(
+            validator.is_valid(&val),
+            "query message failed schema validation: {val}"
         );
     }
 }

@@ -73,6 +73,10 @@ pub enum ServerMessage {
     Heartbeat(HeartbeatPayload),
     /// Response to a client command identified by `cmd_id`.
     CommandResult(CommandResultPayload),
+    /// Historical/recent klines response correlated by `req_id`.
+    Klines(KlinesPayload),
+    /// Recent closed trades response correlated by `req_id`.
+    Trades(TradesPayload),
 }
 
 /// Client-to-server tagged message variants (§10.1–§10.2).
@@ -85,6 +89,10 @@ pub enum ClientMessage {
     Auth(AuthPayload),
     /// Request a fresh full snapshot (e.g. after detecting a `seq` gap).
     RequestSnapshot(EmptyPayload),
+    /// Request klines for `(venue, symbol, tf)` up to `limit` bars.
+    GetKlines(GetKlinesPayload),
+    /// Request closed trades optionally filtered by `venue` and time range.
+    GetTrades(GetTradesPayload),
 }
 
 /// Empty JSON object `{}`.
@@ -615,4 +623,109 @@ impl HttpErrorResponse {
             },
         }
     }
+}
+
+/// Single OHLCV candlestick bar for UI chart rendering (§10.3, §11.4–§11.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KlineBar {
+    /// Bar open timestamp in UTC epoch seconds.
+    pub time: i64,
+    /// Open price (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub open: Decimal,
+    /// High price (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub high: Decimal,
+    /// Low price (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub low: Decimal,
+    /// Close price (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub close: Decimal,
+    /// Base asset volume (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub volume: Decimal,
+}
+
+/// Single executed trade / fill record carrying `venue` (Hard Rule #6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradeRecord {
+    /// Venue where the trade executed (`spot` or `futures`).
+    pub venue: Venue,
+    /// Instrument symbol (e.g. `"ETHUSDT"`).
+    pub symbol: String,
+    /// Trade side (`"BUY"` or `"SELL"`).
+    pub side: String,
+    /// Execution price (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub price: Decimal,
+    /// Executed base quantity (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub qty: Decimal,
+    /// Commission paid in quote/fee asset (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub fee: Decimal,
+    /// Realized `PnL` in quote asset (decimal string).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub realized_pnl: Decimal,
+    /// Execution timestamp in UTC epoch milliseconds.
+    pub ts_ms: i64,
+}
+
+/// Client query payload for `get_klines`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetKlinesPayload {
+    /// Request correlation UUID.
+    pub req_id: Uuid,
+    /// Target venue (`spot` or `futures`).
+    pub venue: Venue,
+    /// Instrument symbol.
+    pub symbol: String,
+    /// Timeframe label (e.g. `"15m"`, `"1h"`).
+    pub tf: String,
+    /// Maximum number of bars to return (`1..=1000`).
+    pub limit: usize,
+}
+
+/// Server response payload for `klines`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KlinesPayload {
+    /// Echoed request correlation UUID.
+    pub req_id: Uuid,
+    /// Venue of the returned klines.
+    pub venue: Venue,
+    /// Instrument symbol.
+    pub symbol: String,
+    /// Timeframe label.
+    pub tf: String,
+    /// Ordered candlestick bars.
+    pub klines: Vec<KlineBar>,
+}
+
+/// Client query payload for `get_trades`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetTradesPayload {
+    /// Request correlation UUID.
+    pub req_id: Uuid,
+    /// Optional venue filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue: Option<Venue>,
+    /// Optional inclusive start timestamp (UTC epoch ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_ms: Option<i64>,
+    /// Optional inclusive end timestamp (UTC epoch ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_ms: Option<i64>,
+}
+
+/// Server response payload for `trades`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradesPayload {
+    /// Echoed request correlation UUID.
+    pub req_id: Uuid,
+    /// Echoed venue filter, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue: Option<Venue>,
+    /// Matched trade records.
+    pub trades: Vec<TradeRecord>,
 }

@@ -18,7 +18,9 @@ describe('IPC v1 protocol fixtures contract', () => {
 		'event.json',
 		'heartbeat.json',
 		'command_result.json',
-		'command_pause.json'
+		'command_pause.json',
+		'klines.json',
+		'trades.json'
 	];
 
 	for (const file of envelopeFixtures) {

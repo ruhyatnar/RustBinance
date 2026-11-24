@@ -636,3 +636,101 @@ async fn conflation_keeps_latest_value_per_key_and_slow_client_is_disconnected()
         "slow client channel must be closed after overflow"
     );
 }
+
+#[tokio::test]
+async fn uds_get_klines_and_get_trades_roundtrip_with_venue() {
+    let dir = TempDir::new().expect("tempdir");
+    let sock_path = dir.path().join("bot-queries.sock");
+    let backend = Arc::new(InMemoryIpcBackend::new(BotConfig::default()));
+    let dispatcher = Arc::new(CommandDispatcher::new(
+        backend,
+        None,
+        ConfirmNonceStore::new(Duration::from_secs(10)),
+    ));
+    let hub = Arc::new(TelemetryHub::new(16));
+    let uds_handle = serve_uds(
+        UdsServerConfig {
+            socket_path: sock_path.clone(),
+            peer_auth: PeerAuthPolicy::allow_current_process(),
+        },
+        dispatcher,
+        hub,
+    )
+    .await
+    .expect("serve_uds");
+
+    let stream = UnixStream::connect(&sock_path).await.expect("connect uds");
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+
+    // Drain hello + initial snapshot
+    reader.read_line(&mut line).await.expect("read hello");
+    line.clear();
+    reader.read_line(&mut line).await.expect("read snapshot");
+    line.clear();
+
+    let klines_req_id = Uuid::now_v7();
+    let get_klines = WireEnvelope::client(
+        1,
+        1_790_000_010_000,
+        ClientMessage::GetKlines(bot_ipc::protocol::GetKlinesPayload {
+            req_id: klines_req_id,
+            venue: Venue::Spot,
+            symbol: "BTCUSDT".to_owned(),
+            tf: "15m".to_owned(),
+            limit: 20,
+        }),
+    );
+    let mut raw_req = serde_json::to_string(&get_klines).expect("json");
+    raw_req.push('\n');
+    write_half
+        .write_all(raw_req.as_bytes())
+        .await
+        .expect("write get_klines");
+
+    reader.read_line(&mut line).await.expect("read klines");
+    let klines_resp: WireEnvelope<ServerMessage> =
+        serde_json::from_str(&line).expect("parse klines");
+    match klines_resp.body {
+        ServerMessage::Klines(payload) => {
+            assert_eq!(payload.req_id, klines_req_id);
+            assert_eq!(payload.venue, Venue::Spot);
+            assert_eq!(payload.symbol, "BTCUSDT");
+            assert_eq!(payload.tf, "15m");
+        }
+        other => panic!("expected ServerMessage::Klines, got {other:?}"),
+    }
+    line.clear();
+
+    let trades_req_id = Uuid::now_v7();
+    let get_trades = WireEnvelope::client(
+        2,
+        1_790_000_011_000,
+        ClientMessage::GetTrades(bot_ipc::protocol::GetTradesPayload {
+            req_id: trades_req_id,
+            venue: Some(Venue::Spot),
+            from_ms: None,
+            to_ms: None,
+        }),
+    );
+    let mut raw_trades = serde_json::to_string(&get_trades).expect("json");
+    raw_trades.push('\n');
+    write_half
+        .write_all(raw_trades.as_bytes())
+        .await
+        .expect("write get_trades");
+
+    reader.read_line(&mut line).await.expect("read trades");
+    let trades_resp: WireEnvelope<ServerMessage> =
+        serde_json::from_str(&line).expect("parse trades");
+    match trades_resp.body {
+        ServerMessage::Trades(payload) => {
+            assert_eq!(payload.req_id, trades_req_id);
+            assert_eq!(payload.venue, Some(Venue::Spot));
+        }
+        other => panic!("expected ServerMessage::Trades, got {other:?}"),
+    }
+
+    uds_handle.abort();
+}

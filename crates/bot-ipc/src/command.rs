@@ -17,7 +17,8 @@ use crate::error::IpcError;
 use crate::nonce::{ConfirmNonceStore, unix_now_ms};
 use crate::protocol::{
     CommandKind, CommandPayload, CommandResultPayload, ConfirmAction, EngineSummary, HelloPayload,
-    PROTOCOL_VERSION, RateStatus, RiskLimitsSummary, RiskSummary, SnapshotPayload, VenuesSummary,
+    KlineBar, PROTOCOL_VERSION, RateStatus, RiskLimitsSummary, RiskSummary, SnapshotPayload,
+    TradeRecord, VenuesSummary,
 };
 
 /// Maximum cached `cmd_id` results retained for idempotency.
@@ -50,13 +51,24 @@ pub trait IpcBackend: Send + Sync + 'static {
     async fn reset_kill(&self) -> Result<String, IpcError>;
     /// Acknowledge an operator alert by ID.
     async fn ack_alert(&self, id: &str) -> Result<String, IpcError>;
-    /// Export recent trades JSON for `GET /api/v1/trades?from=&to=`.
-    async fn list_trades(&self, _from_ms: Option<i64>, _to_ms: Option<i64>) -> serde_json::Value {
-        serde_json::json!({ "trades": [] })
+    /// Query recent executed trades filtered by optional `venue` and UTC millisecond range.
+    async fn list_trades(
+        &self,
+        _venue: Option<Venue>,
+        _from_ms: Option<i64>,
+        _to_ms: Option<i64>,
+    ) -> Vec<TradeRecord> {
+        Vec::new()
     }
-    /// Export klines JSON for `GET /api/v1/klines?symbol=&tf=&limit=`.
-    async fn list_klines(&self, symbol: &str, tf: &str, limit: usize) -> serde_json::Value {
-        serde_json::json!({ "symbol": symbol, "tf": tf, "limit": limit, "klines": [] })
+    /// Query candlestick bars for `(venue, symbol, tf)` up to `limit` bars.
+    async fn list_klines(
+        &self,
+        _venue: Venue,
+        _symbol: &str,
+        _tf: &str,
+        _limit: usize,
+    ) -> Vec<KlineBar> {
+        Vec::new()
     }
     /// Prometheus text exposition for `GET /metrics`.
     async fn prometheus_metrics(&self) -> String {
@@ -319,6 +331,8 @@ struct InMemoryState {
     config: BotConfig,
     mode: EngineMode,
     snapshot: SnapshotPayload,
+    klines: HashMap<(Venue, String, String), Vec<KlineBar>>,
+    trades: Vec<TradeRecord>,
 }
 
 impl InMemoryIpcBackend {
@@ -374,6 +388,8 @@ impl InMemoryIpcBackend {
                 config,
                 mode,
                 snapshot,
+                klines: HashMap::new(),
+                trades: Vec::new(),
             }),
         }
     }
@@ -381,6 +397,25 @@ impl InMemoryIpcBackend {
     /// Read current runtime `BotConfig`.
     pub async fn config(&self) -> BotConfig {
         self.state.read().await.config.clone()
+    }
+
+    /// Replace the in-memory snapshot (synchronizing `mode` with `snapshot.engine.mode`).
+    pub async fn set_snapshot(&self, snapshot: SnapshotPayload) {
+        let mut guard = self.state.write().await;
+        guard.mode = snapshot.engine.mode;
+        guard.snapshot = snapshot;
+    }
+
+    /// Seed candlestick bars for `(venue, symbol, tf)`.
+    pub async fn set_klines(&self, venue: Venue, symbol: String, tf: String, bars: Vec<KlineBar>) {
+        let mut guard = self.state.write().await;
+        guard.klines.insert((venue, symbol, tf), bars);
+    }
+
+    /// Seed recent trade records.
+    pub async fn set_trades(&self, trades: Vec<TradeRecord>) {
+        let mut guard = self.state.write().await;
+        guard.trades = trades;
     }
 }
 
@@ -510,6 +545,39 @@ impl IpcBackend for InMemoryIpcBackend {
         };
         alert.acked = true;
         Ok(format!("alert '{id}' acknowledged"))
+    }
+
+    async fn list_trades(
+        &self,
+        venue: Option<Venue>,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
+    ) -> Vec<TradeRecord> {
+        let guard = self.state.read().await;
+        guard
+            .trades
+            .iter()
+            .filter(|t| venue.is_none_or(|v| t.venue == v))
+            .filter(|t| from_ms.is_none_or(|lo| t.ts_ms >= lo))
+            .filter(|t| to_ms.is_none_or(|hi| t.ts_ms <= hi))
+            .cloned()
+            .collect()
+    }
+
+    async fn list_klines(
+        &self,
+        venue: Venue,
+        symbol: &str,
+        tf: &str,
+        limit: usize,
+    ) -> Vec<KlineBar> {
+        let guard = self.state.read().await;
+        let Some(bars) = guard.klines.get(&(venue, symbol.to_owned(), tf.to_owned())) else {
+            return Vec::new();
+        };
+        let take_n = limit.min(bars.len());
+        let skip_n = bars.len().saturating_sub(take_n);
+        bars.iter().skip(skip_n).cloned().collect()
     }
 }
 

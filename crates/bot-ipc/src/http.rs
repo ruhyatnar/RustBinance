@@ -29,7 +29,8 @@ use crate::error::IpcError;
 use crate::nonce::unix_now_ms;
 use crate::protocol::{
     ClientMessage, CommandKind, CommandPayload, CommandResultPayload, ConfirmAction,
-    HttpErrorResponse, OnOpenPositionsArg, ServerMessage, WireEnvelope,
+    HttpErrorResponse, KlinesPayload, OnOpenPositionsArg, ServerMessage, TradesPayload,
+    WireEnvelope,
 };
 
 /// Strict Content-Security-Policy header applied to all HTTP responses (§10.1).
@@ -243,6 +244,7 @@ async fn handle_state<B: IpcBackend>(
 
 #[derive(Deserialize)]
 struct TradesQuery {
+    venue: Option<Venue>,
     from: Option<i64>,
     to: Option<i64>,
 }
@@ -256,18 +258,34 @@ async fn handle_trades<B: IpcBackend>(
     if let Err(err) = check_http_request(&state, &uri, &headers, false) {
         return error_response(&err);
     }
-    let trades = state.dispatcher.backend().list_trades(q.from, q.to).await;
-    with_security_headers((StatusCode::OK, Json(trades)).into_response())
+    let trades = state
+        .dispatcher
+        .backend()
+        .list_trades(q.venue, q.from, q.to)
+        .await;
+    with_security_headers(
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "trades": trades })),
+        )
+            .into_response(),
+    )
 }
 
 #[derive(Deserialize)]
 struct KlinesQuery {
+    #[serde(default = "default_venue")]
+    venue: Venue,
     #[serde(default)]
     symbol: String,
     #[serde(default = "default_tf")]
     tf: String,
     #[serde(default = "default_limit")]
     limit: usize,
+}
+
+const fn default_venue() -> Venue {
+    Venue::Spot
 }
 
 fn default_tf() -> String {
@@ -287,12 +305,25 @@ async fn handle_klines<B: IpcBackend>(
     if let Err(err) = check_http_request(&state, &uri, &headers, false) {
         return error_response(&err);
     }
+    let clamped = q.limit.clamp(1, 1000);
     let klines = state
         .dispatcher
         .backend()
-        .list_klines(&q.symbol, &q.tf, q.limit.min(1000))
+        .list_klines(q.venue, &q.symbol, &q.tf, clamped)
         .await;
-    with_security_headers((StatusCode::OK, Json(klines)).into_response())
+    with_security_headers(
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "venue": q.venue,
+                "symbol": q.symbol,
+                "tf": q.tf,
+                "limit": clamped,
+                "klines": klines
+            })),
+        )
+            .into_response(),
+    )
 }
 
 async fn handle_metrics<B: IpcBackend>(
@@ -657,31 +688,8 @@ async fn handle_ws_session<B: IpcBackend>(
                         let Ok(env) = serde_json::from_str::<WireEnvelope<ClientMessage>>(&txt) else {
                             break;
                         };
-                        let reply = match env.body {
-                            ClientMessage::Command(cmd) => {
-                                if state.config.rate_limiter.check(&principal).is_err() {
-                                    WireEnvelope::server(
-                                        seq,
-                                        unix_now_ms(),
-                                        ServerMessage::CommandResult(CommandResultPayload {
-                                            cmd_id: cmd.cmd_id,
-                                            ok: false,
-                                            code: "rate_limited".to_owned(),
-                                            message: "rate limit exceeded".to_owned(),
-                                            confirm_nonce: None,
-                                            expires_at_ms: None,
-                                        }),
-                                    )
-                                } else {
-                                    let res = state.dispatcher.dispatch(&principal, scope, cmd).await;
-                                    WireEnvelope::server(seq, unix_now_ms(), ServerMessage::CommandResult(res))
-                                }
-                            }
-                            ClientMessage::RequestSnapshot(_) => {
-                                let s = state.dispatcher.backend().snapshot().await;
-                                WireEnvelope::server(seq, unix_now_ms(), ServerMessage::Snapshot(s))
-                            }
-                            ClientMessage::Auth(_) => continue,
+                        let Some(reply) = build_ws_reply(&state, &principal, scope, seq, env.body).await else {
+                            continue;
                         };
                         seq += 1;
                         if send_ws_envelope(&mut socket, &reply).await.is_err() {
@@ -711,6 +719,64 @@ async fn handle_ws_session<B: IpcBackend>(
     }
 
     state.hub.unsubscribe(client_id).await;
+}
+
+async fn build_ws_reply<B: IpcBackend>(
+    state: &AppState<B>,
+    principal: &str,
+    scope: AuthScope,
+    seq: u64,
+    msg: ClientMessage,
+) -> Option<WireEnvelope<ServerMessage>> {
+    let body = match msg {
+        ClientMessage::Command(cmd) => {
+            if state.config.rate_limiter.check(principal).is_err() {
+                ServerMessage::CommandResult(CommandResultPayload {
+                    cmd_id: cmd.cmd_id,
+                    ok: false,
+                    code: "rate_limited".to_owned(),
+                    message: "rate limit exceeded".to_owned(),
+                    confirm_nonce: None,
+                    expires_at_ms: None,
+                })
+            } else {
+                let res = state.dispatcher.dispatch(principal, scope, cmd).await;
+                ServerMessage::CommandResult(res)
+            }
+        }
+        ClientMessage::RequestSnapshot(_) => {
+            let s = state.dispatcher.backend().snapshot().await;
+            ServerMessage::Snapshot(s)
+        }
+        ClientMessage::GetKlines(q) => {
+            let bars = state
+                .dispatcher
+                .backend()
+                .list_klines(q.venue, &q.symbol, &q.tf, q.limit.clamp(1, 1000))
+                .await;
+            ServerMessage::Klines(KlinesPayload {
+                req_id: q.req_id,
+                venue: q.venue,
+                symbol: q.symbol,
+                tf: q.tf,
+                klines: bars,
+            })
+        }
+        ClientMessage::GetTrades(q) => {
+            let trades = state
+                .dispatcher
+                .backend()
+                .list_trades(q.venue, q.from_ms, q.to_ms)
+                .await;
+            ServerMessage::Trades(TradesPayload {
+                req_id: q.req_id,
+                venue: q.venue,
+                trades,
+            })
+        }
+        ClientMessage::Auth(_) => return None,
+    };
+    Some(WireEnvelope::server(seq, unix_now_ms(), body))
 }
 
 async fn send_ws_envelope(

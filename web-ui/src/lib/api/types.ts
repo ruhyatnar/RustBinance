@@ -178,6 +178,35 @@ export interface CommandResultPayload {
 	expires_at_ms?: number | null;
 }
 
+export interface KlinesPayload {
+	req_id: string;
+	venue: Venue;
+	symbol: string;
+	tf: string;
+	klines: KlineBar[];
+}
+
+export interface TradesPayload {
+	req_id: string;
+	venue?: Venue | null;
+	trades: TradeRecord[];
+}
+
+export interface GetKlinesPayload {
+	req_id: string;
+	venue: Venue;
+	symbol: string;
+	tf: string;
+	limit: number;
+}
+
+export interface GetTradesPayload {
+	req_id: string;
+	venue?: Venue | null;
+	from_ms?: number | null;
+	to_ms?: number | null;
+}
+
 export type ServerMessage =
 	| { type: 'hello'; payload: HelloPayload }
 	| { type: 'snapshot'; payload: SnapshotPayload }
@@ -185,7 +214,9 @@ export type ServerMessage =
 	| { type: 'market'; payload: MarketPayload }
 	| { type: 'event'; payload: EventPayload }
 	| { type: 'heartbeat'; payload: HeartbeatPayload }
-	| { type: 'command_result'; payload: CommandResultPayload };
+	| { type: 'command_result'; payload: CommandResultPayload }
+	| { type: 'klines'; payload: KlinesPayload }
+	| { type: 'trades'; payload: TradesPayload };
 
 export type CommandBody =
 	| { cmd: 'pause' }
@@ -209,7 +240,9 @@ export type CommandPayload = { cmd_id: string } & CommandBody;
 export type ClientMessage =
 	| { type: 'command'; payload: CommandPayload }
 	| { type: 'auth'; payload: { token: string } }
-	| { type: 'request_snapshot'; payload: Record<string, never> };
+	| { type: 'request_snapshot'; payload: Record<string, never> }
+	| { type: 'get_klines'; payload: GetKlinesPayload }
+	| { type: 'get_trades'; payload: GetTradesPayload };
 
 export type WireEnvelope<T extends { type: string; payload: unknown }> = {
 	v: 1;
@@ -261,7 +294,11 @@ const VALID_ENVELOPE_TYPES = new Set([
 	'command_result',
 	'command',
 	'auth',
-	'request_snapshot'
+	'request_snapshot',
+	'klines',
+	'trades',
+	'get_klines',
+	'get_trades'
 ]);
 
 export function isWireEnvelope(value: unknown): value is WireEnvelope<ServerMessage | ClientMessage> {

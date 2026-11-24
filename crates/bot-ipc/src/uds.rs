@@ -14,7 +14,7 @@ use crate::command::{CommandDispatcher, IpcBackend};
 use crate::conflate::TelemetryHub;
 use crate::error::IpcError;
 use crate::nonce::unix_now_ms;
-use crate::protocol::{ClientMessage, ServerMessage, WireEnvelope};
+use crate::protocol::{ClientMessage, KlinesPayload, ServerMessage, TradesPayload, WireEnvelope};
 
 /// Configuration for the local Unix Domain Socket server.
 #[derive(Debug, Clone)]
@@ -129,16 +129,8 @@ async fn handle_uds_connection<B: IpcBackend>(
                         }
                         match serde_json::from_str::<WireEnvelope<ClientMessage>>(trimmed) {
                             Ok(env) => {
-                                let reply = match env.body {
-                                    ClientMessage::Command(cmd) => {
-                                        let res = dispatcher.dispatch(&principal, AuthScope::Full, cmd).await;
-                                        WireEnvelope::server(seq, unix_now_ms(), ServerMessage::CommandResult(res))
-                                    }
-                                    ClientMessage::RequestSnapshot(_) => {
-                                        let s = dispatcher.backend().snapshot().await;
-                                        WireEnvelope::server(seq, unix_now_ms(), ServerMessage::Snapshot(s))
-                                    }
-                                    ClientMessage::Auth(_) => continue,
+                                let Some(reply) = build_uds_reply(&dispatcher, &principal, seq, env.body).await else {
+                                    continue;
                                 };
                                 seq += 1;
                                 if write_json_line(&mut write_half, &reply).await.is_err() {
@@ -168,6 +160,50 @@ async fn handle_uds_connection<B: IpcBackend>(
     }
 
     hub.unsubscribe(client_id).await;
+}
+
+async fn build_uds_reply<B: IpcBackend>(
+    dispatcher: &CommandDispatcher<B>,
+    principal: &str,
+    seq: u64,
+    msg: ClientMessage,
+) -> Option<WireEnvelope<ServerMessage>> {
+    let body = match msg {
+        ClientMessage::Command(cmd) => {
+            let res = dispatcher.dispatch(principal, AuthScope::Full, cmd).await;
+            ServerMessage::CommandResult(res)
+        }
+        ClientMessage::RequestSnapshot(_) => {
+            let s = dispatcher.backend().snapshot().await;
+            ServerMessage::Snapshot(s)
+        }
+        ClientMessage::GetKlines(q) => {
+            let bars = dispatcher
+                .backend()
+                .list_klines(q.venue, &q.symbol, &q.tf, q.limit.clamp(1, 1000))
+                .await;
+            ServerMessage::Klines(KlinesPayload {
+                req_id: q.req_id,
+                venue: q.venue,
+                symbol: q.symbol,
+                tf: q.tf,
+                klines: bars,
+            })
+        }
+        ClientMessage::GetTrades(q) => {
+            let trades = dispatcher
+                .backend()
+                .list_trades(q.venue, q.from_ms, q.to_ms)
+                .await;
+            ServerMessage::Trades(TradesPayload {
+                req_id: q.req_id,
+                venue: q.venue,
+                trades,
+            })
+        }
+        ClientMessage::Auth(_) => return None,
+    };
+    Some(WireEnvelope::server(seq, unix_now_ms(), body))
 }
 
 async fn write_json_line<W: AsyncWriteExt + Unpin>(

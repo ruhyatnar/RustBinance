@@ -1,0 +1,22 @@
+{
+  "v": 1,
+  "type": "trades",
+  "seq": 1049,
+  "ts_ms": 1790000006000,
+  "payload": {
+    "req_id": "0192f0a8-1111-7000-8000-000000000092",
+    "venue": "spot",
+    "trades": [
+      {
+        "venue": "spot",
+        "symbol": "ETHUSDT",
+        "side": "BUY",
+        "price": "3120.40",
+        "qty": "0.320",
+        "fee": "0.9985",
+        "realized_pnl": "21.66",
+        "ts_ms": 1789995000000
+      }
+    ]
+  }
+}

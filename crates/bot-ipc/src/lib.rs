@@ -19,6 +19,7 @@ pub use http::{HttpServerConfig, build_router};
 pub use nonce::{ConfirmNonceStore, DEFAULT_CONFIRM_TTL, IssuedNonce};
 pub use protocol::{
     ClientMessage, CommandKind, CommandPayload, CommandResultPayload, ConfirmAction,
-    HttpErrorResponse, PROTOCOL_VERSION, ServerMessage, SnapshotPayload, WireEnvelope,
+    GetKlinesPayload, GetTradesPayload, HttpErrorResponse, KlineBar, KlinesPayload,
+    PROTOCOL_VERSION, ServerMessage, SnapshotPayload, TradeRecord, TradesPayload, WireEnvelope,
 };
 pub use uds::{UdsServerConfig, serve_uds};

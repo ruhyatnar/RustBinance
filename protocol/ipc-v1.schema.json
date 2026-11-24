@@ -13,7 +13,11 @@
     { "$ref": "#/$defs/CommandResultEnvelope" },
     { "$ref": "#/$defs/CommandEnvelope" },
     { "$ref": "#/$defs/AuthEnvelope" },
-    { "$ref": "#/$defs/RequestSnapshotEnvelope" }
+    { "$ref": "#/$defs/RequestSnapshotEnvelope" },
+    { "$ref": "#/$defs/KlinesEnvelope" },
+    { "$ref": "#/$defs/TradesEnvelope" },
+    { "$ref": "#/$defs/GetKlinesEnvelope" },
+    { "$ref": "#/$defs/GetTradesEnvelope" }
   ],
   "$defs": {
     "ProtocolVersion": {
@@ -557,6 +561,133 @@
         "seq": { "type": "integer", "minimum": 0 },
         "ts_ms": { "type": "integer" },
         "payload": { "$ref": "#/$defs/EmptyPayload" }
+      }
+    },
+    "KlineBar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time", "open", "high", "low", "close", "volume"],
+      "properties": {
+        "time": { "type": "integer" },
+        "open": { "$ref": "#/$defs/DecimalString" },
+        "high": { "$ref": "#/$defs/DecimalString" },
+        "low": { "$ref": "#/$defs/DecimalString" },
+        "close": { "$ref": "#/$defs/DecimalString" },
+        "volume": { "$ref": "#/$defs/DecimalString" }
+      }
+    },
+    "TradeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["venue", "symbol", "side", "price", "qty", "fee", "realized_pnl", "ts_ms"],
+      "properties": {
+        "venue": { "$ref": "#/$defs/Venue" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "side": { "type": "string", "minLength": 1 },
+        "price": { "$ref": "#/$defs/DecimalString" },
+        "qty": { "$ref": "#/$defs/DecimalString" },
+        "fee": { "$ref": "#/$defs/DecimalString" },
+        "realized_pnl": { "$ref": "#/$defs/DecimalString" },
+        "ts_ms": { "type": "integer" }
+      }
+    },
+    "GetKlinesPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["req_id", "venue", "symbol", "tf", "limit"],
+      "properties": {
+        "req_id": { "$ref": "#/$defs/UuidString" },
+        "venue": { "$ref": "#/$defs/Venue" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "tf": { "type": "string", "minLength": 1 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "KlinesPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["req_id", "venue", "symbol", "tf", "klines"],
+      "properties": {
+        "req_id": { "$ref": "#/$defs/UuidString" },
+        "venue": { "$ref": "#/$defs/Venue" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "tf": { "type": "string", "minLength": 1 },
+        "klines": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/KlineBar" }
+        }
+      }
+    },
+    "GetTradesPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["req_id"],
+      "properties": {
+        "req_id": { "$ref": "#/$defs/UuidString" },
+        "venue": { "oneOf": [{ "$ref": "#/$defs/Venue" }, { "type": "null" }] },
+        "from_ms": { "type": ["integer", "null"] },
+        "to_ms": { "type": ["integer", "null"] }
+      }
+    },
+    "TradesPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["req_id", "trades"],
+      "properties": {
+        "req_id": { "$ref": "#/$defs/UuidString" },
+        "venue": { "oneOf": [{ "$ref": "#/$defs/Venue" }, { "type": "null" }] },
+        "trades": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TradeRecord" }
+        }
+      }
+    },
+    "KlinesEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "klines" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/KlinesPayload" }
+      }
+    },
+    "TradesEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "trades" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/TradesPayload" }
+      }
+    },
+    "GetKlinesEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "get_klines" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/GetKlinesPayload" }
+      }
+    },
+    "GetTradesEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "ts_ms", "payload"],
+      "properties": {
+        "v": { "$ref": "#/$defs/ProtocolVersion" },
+        "type": { "const": "get_trades" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "ts_ms": { "type": "integer" },
+        "payload": { "$ref": "#/$defs/GetTradesPayload" }
       }
     },
     "HttpErrorResponse": {
