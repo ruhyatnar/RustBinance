@@ -368,7 +368,11 @@ pub fn render_operational_gate_markdown(metrics: &OperationalGateMetrics) -> Str
     );
     let _ = writeln!(out, "- **Status:** `{status}`");
     let _ = writeln!(out, "- **Venue:** `{:?}`", metrics.venue);
-    let _ = writeln!(out, "- **Observed duration:** {} days", metrics.observed_days);
+    let _ = writeln!(
+        out,
+        "- **Observed duration:** {} days",
+        metrics.observed_days
+    );
     let _ = writeln!(out, "- **Total fills:** {}", metrics.total_fills);
     let _ = writeln!(out, "- **Closed positions:** {}", metrics.closed_positions);
     let _ = writeln!(
@@ -381,7 +385,11 @@ pub fn render_operational_gate_markdown(metrics: &OperationalGateMetrics) -> Str
         "- **Total fees paid (quote):** {}",
         metrics.total_fees_quote
     );
-    let _ = writeln!(out, "- **Engine Halt/Kill events:** {}", metrics.halt_events);
+    let _ = writeln!(
+        out,
+        "- **Engine Halt/Kill events:** {}",
+        metrics.halt_events
+    );
     let _ = writeln!(
         out,
         "- **Reconcile / orphan incidents:** {}\n",
