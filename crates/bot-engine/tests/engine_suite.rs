@@ -399,6 +399,8 @@ fn command_channel_backpressure_returns_busy_when_full() {
     let (_, tel_rx) = tokio::sync::watch::channel(bot_engine::TelemetrySnapshot {
         mode: EngineMode::Ready,
         venue: Venue::Spot,
+        spot_state: bot_types::VenueState::Active,
+        futures_state: bot_types::VenueState::Disabled,
         open_positions: 0,
         active_orders: 0,
         equity_total_usd: Decimal::from(10_000_u32),

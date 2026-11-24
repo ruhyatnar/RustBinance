@@ -206,8 +206,8 @@ impl VenueManager {
                 .unwrap_or(i64::MAX)
                 .saturating_mul(1_000);
             if elapsed_ms < cooldown_ms {
-                let remaining_ms = cooldown_ms.saturating_sub(elapsed_ms);
-                let remaining_s = u64::try_from((remaining_ms + 999) / 1_000).unwrap_or(1);
+                let wait_ms = cooldown_ms.saturating_sub(elapsed_ms);
+                let remaining_s = u64::try_from((wait_ms + 999) / 1_000).unwrap_or(1);
                 return Err(SwitchError::CooldownActive { remaining_s });
             }
         }

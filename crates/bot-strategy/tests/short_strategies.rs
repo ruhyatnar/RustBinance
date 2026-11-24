@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::large_types_passed_by_value)]
 use bot_config::{BreakoutConfig, TrendPullbackConfig};
 use bot_strategy::{
     CommissionRates, HtfRegime, IndicatorSnapshot, S1TrendPullback, S2Breakout, Strategy,
@@ -28,7 +29,12 @@ fn futures_caps() -> VenueCaps {
     }
 }
 
-fn bearish_ctx(indicators: IndicatorSnapshot, bar_close: f64, bar_high: f64, bar_low: f64) -> StrategyCtx {
+fn bearish_ctx(
+    indicators: IndicatorSnapshot,
+    bar_close: f64,
+    bar_high: f64,
+    bar_low: f64,
+) -> StrategyCtx {
     StrategyCtx {
         venue: Venue::UsdsFutures,
         symbol: Symbol("ETHUSDT".to_owned()),
@@ -76,8 +82,10 @@ fn bearish_ctx(indicators: IndicatorSnapshot, bar_close: f64, bar_high: f64, bar
 #[test]
 fn supports_matrix_respects_venue_caps_and_allow_short() {
     let s1_no_short = S1TrendPullback::new(TrendPullbackConfig::default(), dec("15"));
-    let s1_short = S1TrendPullback::new(TrendPullbackConfig::default(), dec("15")).with_allow_short(true);
-    let s2_short = S2Breakout::new(BreakoutConfig::default(), dec("15"), dec("3")).with_allow_short(true);
+    let s1_short =
+        S1TrendPullback::new(TrendPullbackConfig::default(), dec("15")).with_allow_short(true);
+    let s2_short =
+        S2Breakout::new(BreakoutConfig::default(), dec("15"), dec("3")).with_allow_short(true);
 
     // Spot never supports Short.
     assert!(s1_short.supports(&spot_caps(), Direction::Long));
@@ -92,7 +100,8 @@ fn supports_matrix_respects_venue_caps_and_allow_short() {
 
 #[test]
 fn s1_emits_short_signal_on_bearish_pullback_mirror() {
-    let mut s1 = S1TrendPullback::new(TrendPullbackConfig::default(), dec("15")).with_allow_short(true);
+    let mut s1 =
+        S1TrendPullback::new(TrendPullbackConfig::default(), dec("15")).with_allow_short(true);
     let ind = IndicatorSnapshot {
         ema9: Some(2900.0),
         ema21: Some(2950.0),
@@ -119,13 +128,20 @@ fn s1_emits_short_signal_on_bearish_pullback_mirror() {
     let decision = s1.evaluate(&ctx);
     let intent = decision.intent.expect("S1 Short signal must be emitted");
     assert_eq!(intent.direction, Direction::Short);
-    assert!(intent.stop.0 > intent.entry_ref.0, "Short stop must be above entry");
-    assert!(intent.tp1.0 < intent.entry_ref.0, "Short TP1 must be below entry");
+    assert!(
+        intent.stop.0 > intent.entry_ref.0,
+        "Short stop must be above entry"
+    );
+    assert!(
+        intent.tp1.0 < intent.entry_ref.0,
+        "Short TP1 must be below entry"
+    );
 }
 
 #[test]
 fn s2_emits_short_signal_on_donchian_lower_breakdown() {
-    let mut s2 = S2Breakout::new(BreakoutConfig::default(), dec("15"), dec("3")).with_allow_short(true);
+    let mut s2 =
+        S2Breakout::new(BreakoutConfig::default(), dec("15"), dec("3")).with_allow_short(true);
     let ind = IndicatorSnapshot {
         ema9: Some(2860.0),
         ema21: Some(2900.0),
@@ -152,6 +168,12 @@ fn s2_emits_short_signal_on_donchian_lower_breakdown() {
     let decision = s2.evaluate(&ctx);
     let intent = decision.intent.expect("S2 Short signal must be emitted");
     assert_eq!(intent.direction, Direction::Short);
-    assert!(intent.stop.0 > intent.entry_ref.0, "Short stop must be above entry");
-    assert!(intent.tp1.0 < intent.entry_ref.0, "Short TP1 must be below entry");
+    assert!(
+        intent.stop.0 > intent.entry_ref.0,
+        "Short stop must be above entry"
+    );
+    assert!(
+        intent.tp1.0 < intent.entry_ref.0,
+        "Short TP1 must be below entry"
+    );
 }

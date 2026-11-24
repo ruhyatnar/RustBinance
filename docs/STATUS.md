@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M16 (M15 `FuturesAdapter` selesai; menunggu persetujuan pemilik untuk lanjut ke M16)
+**Milestone aktif:** M17 (M16 `VenueManager` & Spot ⇄ Futures switching, Short selesai; menunggu persetujuan pemilik untuk lanjut ke M17)
 **Mode build:** paper / testnet (tidak ada live)
 **Terakhir diperbarui:** 2026-11-24
 
@@ -21,13 +21,20 @@
 - [x] **M13** — Packaging, installer, systemd, chaos suite  → `docs/milestones/M13-*.md`
 - [x] **M14** — OPERASIONAL: gerbang Spot G2→G5 (engineering/tooling selesai via `ADR-0005`; operasional G2–G5 pending sebelum live) → `docs/milestones/M14-*.md`
 - [x] **M15** — FuturesAdapter  → `docs/milestones/M15-*.md`
-- [ ] **M16** — VenueManager & peralihan Spot ⇄ Futures, Short  → `docs/milestones/M16-*.md`
+- [x] **M16** — VenueManager & peralihan Spot ⇄ Futures, Short  → `docs/milestones/M16-*.md`
 - [ ] **M17** — OPERASIONAL: gerbang Futures; opsional dual  → `docs/milestones/M17-*.md`
 
 ## Pertanyaan terbuka (untuk pemilik)
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-24 (M16 — `VenueManager`, Spot ⇄ Futures switching, Cross-Venue Risk, Short & UI Switcher):**
+  - `crates/bot-venue`: `VenueManager` state machine (`Disabled → Activating → Active → Draining`), prasyarat mode/cooldown 60s/limit 3× per hari, rollback atomik, dan transisi `Draining → Disabled`.
+  - `crates/bot-risk`: `CrossVenueBudget` (equity gabungan USD, `portfolio_heat` gabungan, `cross_venue_same_symbol = block_opposite`, `capital_allocation_usd`) + `BtcSpikeGuard` untuk Short (+1.5%/15m atau +3%/60m dengan histeresis).
+  - `crates/bot-strategy`: S1 & S2 Short mirror (§6.4.1), `max_high_3`/`max_high_5` di `IndicatorFeed`, dan matriks `supports(caps, dir)` (`allow_short`).
+  - `crates/bot-store` & `crates/bot-engine`: `JournalEvent::VenueSwitched`, integrasi atomik `VenueManager` ke `EngineActor` (`EngineCommand::SwitchVenue`, `TelemetrySnapshot.{spot_state, futures_state}`), dan uji chaos §13.4 (`venue_switching_chaos.rs`).
+  - `crates/bot-ipc` & `crates/botd`: aktifkan `switch_venue` (wajib `confirm_nonce` untuk `flatten`) dan `venues` live di snapshot telemetri.
+  - `web-ui` & `desktop-ui`: tambahkan `VenueSwitcher.svelte` / `VenueSwitchDialog.svelte` (+ Vitest) dan `VenueSwitcher.qml` / `VenueSwitchDialog.qml`.
 - **2026-11-24 (Perbaikan Audit Pra-M16):** Menutup seluruh temuan Must Fix (#1–#3) & Should Fix (#4–#6):
   - `crates/bot-ipc`: `PeerAuthPolicy::is_allowed_with_groups` memeriksa *supplementary groups* klien via `/proc/<pid>/status` (nol `unsafe`).
   - `crates/botd`: `EngineIpcBackend` + `spawn_telemetry_bridge` menghubungkan `CommandDispatcher` dan `TelemetryHub` langsung ke `EngineHandle` & `watch::Receiver<TelemetrySnapshot>`; `botd` memuat sibling `conf.d/` dan menolak mode non-`paper` hingga M16 (`VenueManager`) terpasang.

@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 use bot_risk::{
     BTC_GUARD_MIN_ACTIVE_MS, BtcSpikeGuard, BtcSpikeSample, CrossVenueBudget, CrossVenuePosition,
     CrossVenueSameSymbolPolicy,
@@ -63,34 +64,40 @@ fn block_opposite_rejects_cross_venue_opposite_direction_same_symbol() {
     }];
 
     // Opposite direction on Futures for BTCUSDT -> rejected.
-    assert!(CrossVenueBudget::check_same_symbol(
-        CrossVenueSameSymbolPolicy::BlockOpposite,
-        &existing,
-        Venue::UsdsFutures,
-        &btc,
-        Direction::Short,
-    )
-    .is_err());
+    assert!(
+        CrossVenueBudget::check_same_symbol(
+            CrossVenueSameSymbolPolicy::BlockOpposite,
+            &existing,
+            Venue::UsdsFutures,
+            &btc,
+            Direction::Short,
+        )
+        .is_err()
+    );
 
     // Same direction on Futures for BTCUSDT -> allowed.
-    assert!(CrossVenueBudget::check_same_symbol(
-        CrossVenueSameSymbolPolicy::BlockOpposite,
-        &existing,
-        Venue::UsdsFutures,
-        &btc,
-        Direction::Long,
-    )
-    .is_ok());
+    assert!(
+        CrossVenueBudget::check_same_symbol(
+            CrossVenueSameSymbolPolicy::BlockOpposite,
+            &existing,
+            Venue::UsdsFutures,
+            &btc,
+            Direction::Long,
+        )
+        .is_ok()
+    );
 
     // Allow policy permits opposite direction.
-    assert!(CrossVenueBudget::check_same_symbol(
-        CrossVenueSameSymbolPolicy::Allow,
-        &existing,
-        Venue::UsdsFutures,
-        &btc,
-        Direction::Short,
-    )
-    .is_ok());
+    assert!(
+        CrossVenueBudget::check_same_symbol(
+            CrossVenueSameSymbolPolicy::Allow,
+            &existing,
+            Venue::UsdsFutures,
+            &btc,
+            Direction::Short,
+        )
+        .is_ok()
+    );
 }
 
 #[test]

@@ -15,11 +15,11 @@ pub use btc_guard::{
     BTC_GUARD_MIN_ACTIVE_MS, BTC_GUARD_NO_NEW_LOW_RELEASE_MS, BTC_GUARD_RETRIGGER_COOLDOWN_MS,
     BtcCrashGuard, BtcGuardAction, BtcMarketSample, BtcSpikeGuard, BtcSpikeSample,
 };
-pub use cross_venue::{CrossVenueBudget, CrossVenuePosition, CrossVenueSameSymbolPolicy};
 pub use counters::{
     CombinedEquityCounters, EquityCheckOutcome, ModeTriggerKind, PROFIT_LOCK_REDUCE_TRIGGER_PCT,
     PROFIT_LOCK_STOP_TRIGGER_PCT,
 };
+pub use cross_venue::{CrossVenueBudget, CrossVenuePosition, CrossVenueSameSymbolPolicy};
 pub use gatekeeper::{
     DEFAULT_MAX_STOP_PCT, DEFAULT_MIN_STOP_PCT, EntryIntent, GateDecision, Gatekeeper,
     GatekeeperContext, MAX_CLOCK_DRIFT_MS, MAX_MARKET_DATA_AGE_MS, MAX_ORDERS_10S_PCT,

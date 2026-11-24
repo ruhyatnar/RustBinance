@@ -604,6 +604,7 @@ impl EngineActor {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_switch_venue(
         &mut self,
         target: Venue,
@@ -639,9 +640,7 @@ impl EngineActor {
             .orders
             .values()
             .filter(|o| {
-                o.venue == old_venue
-                    && o.purpose == OrderPurpose::Entry
-                    && !is_terminal(o.status)
+                o.venue == old_venue && o.purpose == OrderPurpose::Entry && !is_terminal(o.status)
             })
             .map(|o| (o.symbol.clone(), o.client_id.clone()))
             .collect();
@@ -730,7 +729,13 @@ impl EngineActor {
             self.state.apply_event(seq, &sw_env);
         }
 
-        info!(?old_venue, ?target, ?old_state, canceled_entry_orders, "venue switched");
+        info!(
+            ?old_venue,
+            ?target,
+            ?old_state,
+            canceled_entry_orders,
+            "venue switched"
+        );
         Ok(VenueSwitchReport {
             from: old_venue,
             to: target,

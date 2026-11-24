@@ -55,7 +55,7 @@ impl S2Breakout {
         self
     }
 
-    fn evaluate_short(&self, ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
+    fn evaluate_short(ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
         let (Some(dc_lower), Some(dc_mid), Some(rsi), Some(atr), Some(vol_sma20)) = (
             ctx.indicators.donchian_lower,
             ctx.indicators.donchian_mid,
@@ -91,7 +91,10 @@ impl S2Breakout {
         let stop_f = dc_mid.max(close + 1.5 * atr);
         let r_dist = stop_f - close;
         if r_dist <= 0.0 {
-            logs.push(GateLog::fail("stop_distance", "non-positive Short R distance"));
+            logs.push(GateLog::fail(
+                "stop_distance",
+                "non-positive Short R distance",
+            ));
             return SignalDecision {
                 intent: None,
                 gate_logs: logs,
@@ -107,7 +110,10 @@ impl S2Breakout {
             f64_to_decimal(tp2_f),
             f64_to_decimal(atr),
         ) else {
-            logs.push(GateLog::fail("decimal_conv", "failed to convert Short prices"));
+            logs.push(GateLog::fail(
+                "decimal_conv",
+                "failed to convert Short prices",
+            ));
             return SignalDecision {
                 intent: None,
                 gate_logs: logs,
@@ -164,7 +170,7 @@ impl Strategy for S2Breakout {
             && ctx.htf.ema50_falling_3bars
             && self.supports(&ctx.venue_caps, Direction::Short)
         {
-            return self.evaluate_short(ctx, logs);
+            return Self::evaluate_short(ctx, logs);
         }
 
         if !self.supports(&ctx.venue_caps, Direction::Long) {

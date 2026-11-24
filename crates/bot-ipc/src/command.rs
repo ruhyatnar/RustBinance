@@ -17,8 +17,8 @@ use crate::error::IpcError;
 use crate::nonce::{ConfirmNonceStore, unix_now_ms};
 use crate::protocol::{
     CommandKind, CommandPayload, CommandResultPayload, ConfirmAction, EngineSummary, HelloPayload,
-    KlineBar, PROTOCOL_VERSION, RateStatus, RiskLimitsSummary, RiskSummary, SnapshotPayload,
-    OnOpenPositionsArg, TradeRecord, VenuesSummary,
+    KlineBar, OnOpenPositionsArg, PROTOCOL_VERSION, RateStatus, RiskLimitsSummary, RiskSummary,
+    SnapshotPayload, TradeRecord, VenuesSummary,
 };
 
 /// Maximum cached `cmd_id` results retained for idempotency.

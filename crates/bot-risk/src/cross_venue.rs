@@ -44,7 +44,10 @@ impl CrossVenueBudget {
     /// Effective equity available for sizing on a single venue:
     /// `min(venue_equity, capital_allocation_usd)` when `capital_allocation_usd > 0` (§3.5, §7.8).
     #[must_use]
-    pub fn effective_venue_equity(venue_equity: Decimal, capital_allocation_usd: Decimal) -> Decimal {
+    pub fn effective_venue_equity(
+        venue_equity: Decimal,
+        capital_allocation_usd: Decimal,
+    ) -> Decimal {
         let clamped_equity = venue_equity.max(Decimal::ZERO);
         if capital_allocation_usd > Decimal::ZERO {
             clamped_equity.min(capital_allocation_usd)

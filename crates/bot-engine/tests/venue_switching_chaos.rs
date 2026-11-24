@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -89,7 +90,10 @@ impl ExchangeGateway for MockVenueAdapter {
         Err(GatewayError::Unsupported("mock".into()))
     }
 
-    async fn open_orders(&self, _symbol: Option<&Symbol>) -> Result<Vec<OrderSnapshot>, GatewayError> {
+    async fn open_orders(
+        &self,
+        _symbol: Option<&Symbol>,
+    ) -> Result<Vec<OrderSnapshot>, GatewayError> {
         Ok(vec![])
     }
 
@@ -153,7 +157,9 @@ impl VenueAdapter for MockVenueAdapter {
 
     async fn activate(&self) -> Result<ActivationReport, GatewayError> {
         if self.fail_activate.load(Ordering::SeqCst) {
-            return Err(GatewayError::Transport("simulated WS/margin failure".into()));
+            return Err(GatewayError::Transport(
+                "simulated WS/margin failure".into(),
+            ));
         }
         Ok(ActivationReport {
             venue: self.venue,

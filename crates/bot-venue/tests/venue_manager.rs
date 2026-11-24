@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 use bot_types::{EngineMode, TradingMode, Venue, VenueState};
 use bot_venue::{SwitchConfig, SwitchError, SwitchPolicy, SwitchPrecheckContext, VenueManager};
 
@@ -130,9 +131,10 @@ fn switch_enforces_live_confirmation_cooldown_and_daily_limit() {
 
     // Next UTC day resets the daily switch counter.
     let next_day_ctx = ready_ctx(now + 86_400_000, 2, 0);
-    assert!(mgr
-        .precheck_switch(Venue::Spot, SwitchPolicy::Flatten, &next_day_ctx)
-        .is_ok());
+    assert!(
+        mgr.precheck_switch(Venue::Spot, SwitchPolicy::Flatten, &next_day_ctx)
+            .is_ok()
+    );
 }
 
 #[test]

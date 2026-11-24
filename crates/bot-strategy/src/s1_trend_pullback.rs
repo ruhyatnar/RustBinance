@@ -50,7 +50,7 @@ impl S1TrendPullback {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn evaluate_short(&self, ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
+    fn evaluate_short(ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
         let htf_bearish =
             ctx.htf.ready && ctx.htf.close < ctx.htf.ema50 && ctx.htf.ema50_falling_3bars;
         if !htf_bearish {
@@ -125,7 +125,10 @@ impl S1TrendPullback {
         let stop_f = max_high_5.max(close + 1.5 * atr) + 0.1 * atr;
         let r_dist = stop_f - close;
         if r_dist <= 0.0 {
-            logs.push(GateLog::fail("stop_distance", "non-positive Short R distance"));
+            logs.push(GateLog::fail(
+                "stop_distance",
+                "non-positive Short R distance",
+            ));
             return SignalDecision {
                 intent: None,
                 gate_logs: logs,
@@ -141,14 +144,20 @@ impl S1TrendPullback {
             f64_to_decimal(tp2_f),
             f64_to_decimal(atr),
         ) else {
-            logs.push(GateLog::fail("decimal_conv", "failed to convert Short prices"));
+            logs.push(GateLog::fail(
+                "decimal_conv",
+                "failed to convert Short prices",
+            ));
             return SignalDecision {
                 intent: None,
                 gate_logs: logs,
             };
         };
 
-        logs.push(GateLog::pass("s1_short_rules", "S1 Short mirror rules passed"));
+        logs.push(GateLog::pass(
+            "s1_short_rules",
+            "S1 Short mirror rules passed",
+        ));
         SignalDecision {
             intent: Some(StrategyEntryIntent {
                 venue: ctx.venue,
@@ -199,7 +208,7 @@ impl Strategy for S1TrendPullback {
             && ctx.htf.ema50_falling_3bars
             && self.supports(&ctx.venue_caps, Direction::Short)
         {
-            return self.evaluate_short(ctx, logs);
+            return Self::evaluate_short(ctx, logs);
         }
 
         if !self.supports(&ctx.venue_caps, Direction::Long) {
