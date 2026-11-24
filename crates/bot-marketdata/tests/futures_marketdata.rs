@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use std::str::FromStr;
 
 use bot_marketdata::BookStatus;
@@ -21,8 +23,14 @@ fn parses_futures_mark_price_stream_payload() {
     let tick = parse_futures_mark_price(raw).expect("parse markPriceUpdate");
     assert_eq!(tick.venue, Venue::UsdsFutures);
     assert_eq!(tick.symbol, Symbol("BTCUSDT".into()));
-    assert_eq!(tick.mark_price, Price(Decimal::from_str("50123.45000000").expect("dec")));
-    assert_eq!(tick.funding_rate, Decimal::from_str("0.00010000").expect("dec"));
+    assert_eq!(
+        tick.mark_price,
+        Price(Decimal::from_str("50123.45000000").expect("dec"))
+    );
+    assert_eq!(
+        tick.funding_rate,
+        Decimal::from_str("0.00010000").expect("dec")
+    );
     assert_eq!(tick.next_funding_time_ms, 1_700_006_400_000);
 }
 

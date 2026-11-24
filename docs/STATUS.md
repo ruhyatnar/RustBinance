@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M14 (engineering/tooling selesai sesuai ADR-0005 — operasional G2→G5 pending di testnet/paper; menunggu persetujuan pemilik untuk lanjut ke M15)
+**Milestone aktif:** M16 (M15 `FuturesAdapter` selesai; menunggu persetujuan pemilik untuk lanjut ke M16)
 **Mode build:** paper / testnet (tidak ada live)
 **Terakhir diperbarui:** 2026-11-24
 
@@ -20,7 +20,7 @@
 - [x] **M12** — desktop-ui (Qt6/Plasma 6)  → `docs/milestones/M12-*.md`
 - [x] **M13** — Packaging, installer, systemd, chaos suite  → `docs/milestones/M13-*.md`
 - [x] **M14** — OPERASIONAL: gerbang Spot G2→G5 (engineering/tooling selesai via `ADR-0005`; operasional G2–G5 pending sebelum live) → `docs/milestones/M14-*.md`
-- [ ] **M15** — FuturesAdapter  → `docs/milestones/M15-*.md`
+- [x] **M15** — FuturesAdapter  → `docs/milestones/M15-*.md`
 - [ ] **M16** — VenueManager & peralihan Spot ⇄ Futures, Short  → `docs/milestones/M16-*.md`
 - [ ] **M17** — OPERASIONAL: gerbang Futures; opsional dual  → `docs/milestones/M17-*.md`
 

@@ -41,7 +41,7 @@ pub enum FuturesUserEvent {
         cum_filled_qty: Qty,
         /// Last filled price.
         last_filled_price: Price,
-        /// Realized PnL.
+        /// Realized `PnL`.
         realized_pnl: Decimal,
     },
     /// `ACCOUNT_UPDATE`: balance and position update.
@@ -120,10 +120,7 @@ fn parse_side(s: &str) -> Result<Side, GatewayError> {
 pub fn parse_futures_exchange_info(raw: &str) -> Result<ExchangeInfoSnapshot, GatewayError> {
     let root: Value = serde_json::from_str(raw)
         .map_err(|e| GatewayError::InvalidRequest(format!("invalid exchangeInfo JSON: {e}")))?;
-    let server_time_ms = root
-        .get("serverTime")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let server_time_ms = root.get("serverTime").and_then(Value::as_i64).unwrap_or(0);
     let symbols_arr = root
         .get("symbols")
         .and_then(Value::as_array)
@@ -135,10 +132,7 @@ pub fn parse_futures_exchange_info(raw: &str) -> Result<ExchangeInfoSnapshot, Ga
             .get("symbol")
             .and_then(Value::as_str)
             .ok_or_else(|| GatewayError::InvalidRequest("symbol missing 'symbol' field".into()))?;
-        let status = sym
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("BREAK");
+        let status = sym.get("status").and_then(Value::as_str).unwrap_or("BREAK");
         let base_precision = sym
             .get("quantityPrecision")
             .and_then(Value::as_u64)
@@ -211,6 +205,7 @@ pub fn parse_futures_exchange_info(raw: &str) -> Result<ExchangeInfoSnapshot, Ga
 ///
 /// # Errors
 /// Returns [`GatewayError::InvalidRequest`] if the frame is not valid JSON or has an unknown event type.
+#[allow(clippy::too_many_lines)]
 pub fn parse_futures_user_event(raw: &str) -> Result<FuturesUserEvent, GatewayError> {
     let root: Value = serde_json::from_str(raw).map_err(|e| {
         GatewayError::InvalidRequest(format!("invalid futures user event JSON: {e}"))
@@ -322,10 +317,7 @@ pub fn parse_futures_user_event(raw: &str) -> Result<FuturesUserEvent, GatewayEr
             })
         }
         "MARGIN_CALL" => {
-            let position_count = root
-                .get("p")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
+            let position_count = root.get("p").and_then(Value::as_array).map_or(0, Vec::len);
             Ok(FuturesUserEvent::MarginCall {
                 venue: Venue::UsdsFutures,
                 event_time_ms,
@@ -386,10 +378,7 @@ pub fn build_place_algo_order_params(
         map.insert("quantity".into(), Value::String(qty.0.to_string()));
     }
     if let Some(trigger) = req.trigger_price {
-        map.insert(
-            "triggerPrice".into(),
-            Value::String(trigger.0.to_string()),
-        );
+        map.insert("triggerPrice".into(), Value::String(trigger.0.to_string()));
     }
     if let Some(activate) = req.activate_price {
         map.insert(

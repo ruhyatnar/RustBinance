@@ -61,7 +61,7 @@ pub enum PaperMarkOutcome {
     None,
     /// Position was liquidated at `mark_price`.
     Liquidated {
-        /// Realized PnL (isolated margin lost).
+        /// Realized `PnL` (isolated margin lost).
         realized_pnl: Decimal,
     },
     /// An Algo order (`StopMarket`, `TakeProfitMarket`, or `TrailingStopMarket`) closed the position.
@@ -70,7 +70,7 @@ pub enum PaperMarkOutcome {
         algo_id: i64,
         /// Algo order type.
         order_type: AlgoOrderType,
-        /// Realized PnL in USDT.
+        /// Realized `PnL` in USDT.
         realized_pnl: Decimal,
     },
 }
@@ -119,9 +119,7 @@ impl PaperFuturesBroker {
     /// Snapshot of current USDT equity.
     #[must_use]
     pub fn equity_usdt(&self) -> Decimal {
-        self.state
-            .lock()
-            .map_or(Decimal::ZERO, |g| g.equity_usdt)
+        self.state.lock().map_or(Decimal::ZERO, |g| g.equity_usdt)
     }
 
     /// Snapshot of open position for `symbol`, if any.
@@ -153,7 +151,12 @@ impl PaperFuturesBroker {
     }
 
     /// Apply a periodic funding settlement (`funding_rate > 0`: Long pays Short).
-    pub fn apply_funding(&self, symbol: &Symbol, mark_price: Price, funding_rate: Decimal) -> Decimal {
+    pub fn apply_funding(
+        &self,
+        symbol: &Symbol,
+        mark_price: Price,
+        funding_rate: Decimal,
+    ) -> Decimal {
         let Ok(mut g) = self.state.lock() else {
             return Decimal::ZERO;
         };
@@ -198,10 +201,10 @@ impl PaperFuturesBroker {
             }
             let trig = req.trigger_price?;
             let hit = match (pos.side, req.order_type) {
-                (Side::Buy, AlgoOrderType::StopMarket) => mark_price.0 <= trig.0,
-                (Side::Sell, AlgoOrderType::StopMarket) => mark_price.0 >= trig.0,
-                (Side::Buy, AlgoOrderType::TakeProfitMarket) => mark_price.0 >= trig.0,
-                (Side::Sell, AlgoOrderType::TakeProfitMarket) => mark_price.0 <= trig.0,
+                (Side::Buy, AlgoOrderType::StopMarket)
+                | (Side::Sell, AlgoOrderType::TakeProfitMarket) => mark_price.0 <= trig.0,
+                (Side::Sell, AlgoOrderType::StopMarket)
+                | (Side::Buy, AlgoOrderType::TakeProfitMarket) => mark_price.0 >= trig.0,
                 _ => false,
             };
             hit.then_some((id, req.order_type))
@@ -309,7 +312,9 @@ impl ExchangeGateway for PaperFuturesBroker {
     }
 
     async fn query_order(&self, _req: QueryOrderRequest) -> Result<OrderSnapshot, GatewayError> {
-        Err(GatewayError::Unsupported("not implemented in paper futures".into()))
+        Err(GatewayError::Unsupported(
+            "not implemented in paper futures".into(),
+        ))
     }
 
     async fn open_orders(
@@ -352,7 +357,9 @@ impl ExchangeGateway for PaperFuturesBroker {
             .map_err(|_| GatewayError::InvalidRequest("paper futures lock poisoned".into()))?;
         if g.fail_next_place_algo {
             g.fail_next_place_algo = false;
-            return Err(GatewayError::Transport("injected place_algo_order failure".into()));
+            return Err(GatewayError::Transport(
+                "injected place_algo_order failure".into(),
+            ));
         }
         let algo_id = g.next_id;
         g.next_id += 1;
@@ -396,7 +403,9 @@ impl ExchangeGateway for PaperFuturesBroker {
                 .find_map(|(&id, o)| (o.client_algo_id == *cid).then_some(id))
                 .ok_or_else(|| GatewayError::InvalidRequest("algo order not found".into()))?
         } else {
-            return Err(GatewayError::InvalidRequest("missing algo_id/client_algo_id".into()));
+            return Err(GatewayError::InvalidRequest(
+                "missing algo_id/client_algo_id".into(),
+            ));
         };
         let removed = g
             .algo_orders

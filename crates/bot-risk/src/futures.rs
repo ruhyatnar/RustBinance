@@ -146,7 +146,10 @@ pub fn check_futures_entry_gates(
         });
     }
     let remaining_ms = input.next_funding_time_ms.saturating_sub(input.now_ms);
-    if remaining_ms >= 0 && remaining_ms < cfg.funding_blackout_before_ms && adverse_funding > Decimal::ZERO {
+    if remaining_ms >= 0
+        && remaining_ms < cfg.funding_blackout_before_ms
+        && adverse_funding > Decimal::ZERO
+    {
         return Err(FuturesGateRejection::FundingBlackout {
             remaining_ms,
             blackout_ms: cfg.funding_blackout_before_ms,

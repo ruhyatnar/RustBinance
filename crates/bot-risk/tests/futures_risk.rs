@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use std::str::FromStr;
 
 use bot_risk::futures::{

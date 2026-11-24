@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use std::str::FromStr;
 
 use bot_exchange::{AlgoOrderType, ExchangeGateway, PlaceOrderRequest, TimeInForce};
@@ -49,9 +51,14 @@ async fn full_long_lifecycle_entry_sl_tp_be_trail_exit_with_zero_sl_gap() {
     assert_eq!(broker.active_sl_count(&sym), 1);
 
     // 3. Move SL to breakeven (make-before-break)
-    mgr.move_stop_make_before_break(&broker, &mut prot, Price(dec("50050")), "b01r1F-000004-BE".into())
-        .await
-        .expect("move SL to BE");
+    mgr.move_stop_make_before_break(
+        &broker,
+        &mut prot,
+        Price(dec("50050")),
+        "b01r1F-000004-BE".into(),
+    )
+    .await
+    .expect("move SL to BE");
     assert_eq!(broker.active_sl_count(&sym), 1);
     assert_eq!(prot.active_sl_price, Price(dec("50050")));
 
@@ -63,11 +70,17 @@ async fn full_long_lifecycle_entry_sl_tp_be_trail_exit_with_zero_sl_gap() {
         .collect();
     assert!(matches!(
         be_ops.first(),
-        Some(PaperFuturesOp::PlaceAlgo { active_sl_count_after: 2, .. })
+        Some(PaperFuturesOp::PlaceAlgo {
+            active_sl_count_after: 2,
+            ..
+        })
     ));
     assert!(matches!(
         be_ops.get(1),
-        Some(PaperFuturesOp::CancelAlgo { active_sl_count_after: 1, .. })
+        Some(PaperFuturesOp::CancelAlgo {
+            active_sl_count_after: 1,
+            ..
+        })
     ));
 
     // 4. Install trailing stop
@@ -186,6 +199,8 @@ async fn paper_futures_liquidates_when_mark_crosses_liq_price() {
 
     let pos = broker.position(&sym).expect("open pos");
     let out = broker.on_mark_price(&sym, pos.liq_price);
-    assert!(matches!(out, PaperMarkOutcome::Liquidated { realized_pnl } if realized_pnl < Decimal::ZERO));
+    assert!(
+        matches!(out, PaperMarkOutcome::Liquidated { realized_pnl } if realized_pnl < Decimal::ZERO)
+    );
     assert!(broker.position(&sym).is_none());
 }

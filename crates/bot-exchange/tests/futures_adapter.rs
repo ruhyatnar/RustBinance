@@ -1,12 +1,12 @@
+#![allow(clippy::expect_used)]
+
 use std::str::FromStr;
 
 use bot_exchange::futures::{
     FuturesAccountSetup, FuturesAdapter, FuturesAdapterConfig, FuturesMarginType, FuturesUserEvent,
     build_place_algo_order_params, parse_futures_exchange_info, parse_futures_user_event,
 };
-use bot_exchange::{
-    AlgoOrderType, PlaceAlgoOrderRequest, VenueAdapter, WorkingType,
-};
+use bot_exchange::{AlgoOrderType, PlaceAlgoOrderRequest, VenueAdapter, WorkingType};
 use bot_types::{Price, Side, Symbol, Venue};
 use rust_decimal::Decimal;
 
@@ -42,23 +42,48 @@ async fn activate_succeeds_when_flat_isolated_oneway_within_cap() {
 async fn activate_rejects_hedge_mode_multi_assets_cross_and_non_flat() {
     let mut hedge = clean_setup();
     hedge.dual_side_position = true;
-    assert!(FuturesAdapter::new(test_cfg(), hedge).activate().await.is_err());
+    assert!(
+        FuturesAdapter::new(test_cfg(), hedge)
+            .activate()
+            .await
+            .is_err()
+    );
 
     let mut multi = clean_setup();
     multi.multi_assets_margin = true;
-    assert!(FuturesAdapter::new(test_cfg(), multi).activate().await.is_err());
+    assert!(
+        FuturesAdapter::new(test_cfg(), multi)
+            .activate()
+            .await
+            .is_err()
+    );
 
     let mut cross = clean_setup();
     cross.margin_type = FuturesMarginType::Crossed;
-    assert!(FuturesAdapter::new(test_cfg(), cross).activate().await.is_err());
+    assert!(
+        FuturesAdapter::new(test_cfg(), cross)
+            .activate()
+            .await
+            .is_err()
+    );
 
     let mut non_flat = clean_setup();
     non_flat.has_open_positions = true;
-    assert!(FuturesAdapter::new(test_cfg(), non_flat).activate().await.is_err());
+    assert!(
+        FuturesAdapter::new(test_cfg(), non_flat)
+            .activate()
+            .await
+            .is_err()
+    );
 
     let mut over_lev = clean_setup();
     over_lev.leverage = 10;
-    assert!(FuturesAdapter::new(test_cfg(), over_lev).activate().await.is_err());
+    assert!(
+        FuturesAdapter::new(test_cfg(), over_lev)
+            .activate()
+            .await
+            .is_err()
+    );
 }
 
 #[test]
@@ -80,8 +105,14 @@ fn parses_futures_exchange_info_with_notional_filter() {
     let snap = parse_futures_exchange_info(raw).expect("parse futures exchangeInfo");
     assert_eq!(snap.venue, Venue::UsdsFutures);
     assert_eq!(snap.rules.len(), 1);
-    assert_eq!(snap.rules[0].min_notional, Decimal::from_str("5.0").expect("dec"));
-    assert_eq!(snap.rules[0].tick_size, Decimal::from_str("0.10").expect("dec"));
+    assert_eq!(
+        snap.rules[0].min_notional,
+        Decimal::from_str("5.0").expect("dec")
+    );
+    assert_eq!(
+        snap.rules[0].tick_size,
+        Decimal::from_str("0.10").expect("dec")
+    );
 }
 
 #[test]
@@ -107,7 +138,10 @@ fn parses_all_futures_user_data_events() {
     let mc_ev = r#"{"e":"MARGIN_CALL","E":1700000000004,"p":[{"s":"BTCUSDT"}]}"#;
     assert!(matches!(
         parse_futures_user_event(mc_ev).expect("margin call"),
-        FuturesUserEvent::MarginCall { position_count: 1, .. }
+        FuturesUserEvent::MarginCall {
+            position_count: 1,
+            ..
+        }
     ));
 
     let cfg_ev = r#"{"e":"ACCOUNT_CONFIG_UPDATE","E":1700000000005}"#;

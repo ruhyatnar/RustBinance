@@ -149,7 +149,7 @@ impl AlgoProtectionManager {
             .await?;
 
         let old_id = state.active_sl_algo_id;
-        let old_cid = state.active_sl_client_id.clone();
+        let prev_client_id = state.active_sl_client_id.clone();
 
         // Update state immediately to the newly confirmed SL before canceling the old one.
         state.active_sl_algo_id = new_ack.algo_id;
@@ -159,7 +159,7 @@ impl AlgoProtectionManager {
         // Step 2 (BREAK): cancel old SL now that new SL is confirmed active.
         gw.cancel_algo_order(CancelAlgoOrderRequest {
             symbol: state.symbol.clone(),
-            client_algo_id: Some(old_cid),
+            client_algo_id: Some(prev_client_id),
             algo_id: Some(old_id),
         })
         .await?;
