@@ -110,6 +110,8 @@ private slots:
         QCOMPARE(store.applyEnvelope(ev), botui::EnvelopeOutcome::Ok);
         QCOMPARE(store.eventsModel()->rowCount(), 1);
 
+        store.setChartSymbol(QStringLiteral("BTCUSDT"));
+        store.setChartTf(QStringLiteral("15m"));
         QJsonObject klines = loadFixtureObject(QStringLiteral("klines.json"));
         klines.insert(QStringLiteral("seq"), 13);
         QCOMPARE(store.applyEnvelope(klines), botui::EnvelopeOutcome::Ok);
@@ -119,6 +121,31 @@ private slots:
         trades.insert(QStringLiteral("seq"), 14);
         QCOMPARE(store.applyEnvelope(trades), botui::EnvelopeOutcome::Ok);
         QCOMPARE(store.tradesModel()->rowCount(), 1);
+    }
+
+    void ignoresStaleKlinesForMismatchedSymbolOrTimeframe() {
+        botui::StateStore store;
+        QJsonObject snap = loadFixtureObject(QStringLiteral("snapshot.json"));
+        snap.insert(QStringLiteral("seq"), 1);
+        QCOMPARE(store.applyEnvelope(snap), botui::EnvelopeOutcome::Ok);
+        // snapshot.json has open ETHUSDT position -> chartSymbol is ETHUSDT, chartTf is 15m
+        QCOMPARE(store.chartSymbol(), QStringLiteral("ETHUSDT"));
+
+        // klines.json is for BTCUSDT 15m -> must NOT overwrite ETHUSDT chart bars!
+        QJsonObject staleBtcKlines = loadFixtureObject(QStringLiteral("klines.json"));
+        staleBtcKlines.insert(QStringLiteral("seq"), 2);
+        QCOMPARE(store.applyEnvelope(staleBtcKlines), botui::EnvelopeOutcome::Ok);
+        QCOMPARE(store.klines().size(), 0);
+        QCOMPARE(store.lastSeq(), static_cast<qulonglong>(2));
+
+        // Matching ETHUSDT 15m klines MUST populate store.klines()
+        QJsonObject ethKlines = staleBtcKlines;
+        ethKlines.insert(QStringLiteral("seq"), 3);
+        QJsonObject payload = ethKlines.value(QStringLiteral("payload")).toObject();
+        payload.insert(QStringLiteral("symbol"), QStringLiteral("ETHUSDT"));
+        ethKlines.insert(QStringLiteral("payload"), payload);
+        QCOMPARE(store.applyEnvelope(ethKlines), botui::EnvelopeOutcome::Ok);
+        QCOMPARE(store.klines().size(), 2);
     }
 
     void deduplicatesAlertNotificationsAcrossSnapshots() {

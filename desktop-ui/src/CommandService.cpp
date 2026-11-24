@@ -13,6 +13,27 @@ CommandService::CommandService(StateStore* store, IpcClient* client, QObject* pa
     if (m_client != nullptr) {
         connect(m_client, &IpcClient::commandResultReceived, this, &CommandService::onCommandResult);
     }
+    if (m_store != nullptr) {
+        connect(m_store, &StateStore::connectionChanged, this, [this]() {
+            if (m_store->connectionState() != QStringLiteral("connected")) {
+                const bool wasBusy = busy();
+                m_pendingConfirms.clear();
+                m_trackedMutations.clear();
+                if (wasBusy != busy()) {
+                    emit busyChanged();
+                }
+            }
+        });
+        connect(m_store, &StateStore::securityChanged, this, [this]() {
+            if (!m_store->canMutate() && !m_pendingConfirms.isEmpty()) {
+                const bool wasBusy = busy();
+                m_pendingConfirms.clear();
+                if (wasBusy != busy()) {
+                    emit busyChanged();
+                }
+            }
+        });
+    }
 }
 
 bool CommandService::requireMutationUnlocked() {
@@ -171,7 +192,14 @@ void CommandService::refreshKlines(const QString& venue,
     if (cleanSym.isEmpty()) {
         return;
     }
-    m_client->requestKlines(cleanVenue, cleanSym, cleanTf, limit);
+    if (m_store != nullptr) {
+        m_store->setChartSymbol(cleanSym);
+        m_store->setChartTf(cleanTf);
+    }
+    const QString reqId = m_client->requestKlines(cleanVenue, cleanSym, cleanTf, limit);
+    if (m_store != nullptr && !reqId.isEmpty()) {
+        m_store->setExpectedKlinesReqId(reqId);
+    }
 }
 
 void CommandService::refreshTrades(const QString& venue) {
@@ -191,6 +219,12 @@ void CommandService::onCommandResult(const QString& cmdId,
 
     if (m_pendingConfirms.contains(cmdId)) {
         const QString action = m_pendingConfirms.take(cmdId);
+        if (!requireMutationUnlocked()) {
+            if (wasBusy != busy()) {
+                emit busyChanged();
+            }
+            return;
+        }
         if (!ok || confirmNonce.isEmpty()) {
             if (m_store != nullptr) {
                 m_store->setActionFeedback(

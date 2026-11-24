@@ -93,6 +93,7 @@ private slots:
             ev.insert(QStringLiteral("seq"), 4);
             store.applyEnvelope(ev);
 
+            store.setChartSymbol(QStringLiteral("BTCUSDT"));
             QJsonObject klines = loadFixture(QStringLiteral("klines.json"));
             klines.insert(QStringLiteral("seq"), 5);
             store.applyEnvelope(klines);

@@ -74,6 +74,10 @@ void StateStore::setChartSymbol(const QString& symbol) {
     }
     m_chartSymbol = clean;
     m_userChoseChartSymbol = true;
+    if (!m_klines.isEmpty()) {
+        m_klines.clear();
+        emit klinesChanged();
+    }
     emit chartChanged();
 }
 
@@ -83,6 +87,10 @@ void StateStore::setChartTf(const QString& tf) {
         return;
     }
     m_chartTf = clean;
+    if (!m_klines.isEmpty()) {
+        m_klines.clear();
+        emit klinesChanged();
+    }
     emit chartChanged();
 }
 
@@ -234,6 +242,15 @@ EnvelopeOutcome StateStore::applyEnvelope(const QJsonObject& env) {
     }
 
     if (type == QStringLiteral("klines")) {
+        const QString respReqId = payload.value(QStringLiteral("req_id")).toString();
+        const QString respVenue = payload.value(QStringLiteral("venue")).toString();
+        const QString respSymbol = payload.value(QStringLiteral("symbol")).toString();
+        const QString respTf = payload.value(QStringLiteral("tf")).toString();
+        if ((!m_expectedKlinesReqId.isEmpty() && respReqId != m_expectedKlinesReqId) ||
+            respVenue != m_activeVenue || respSymbol != m_chartSymbol || respTf != m_chartTf) {
+            emit telemetryChanged();
+            return EnvelopeOutcome::Ok;
+        }
         const QJsonArray arr = payload.value(QStringLiteral("klines")).toArray();
         QVariantList next;
         next.reserve(arr.size());

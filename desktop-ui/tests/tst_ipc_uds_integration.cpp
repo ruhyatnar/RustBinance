@@ -371,6 +371,112 @@ private slots:
         client.disconnectFromDaemon();
         stopMockRustDaemon(daemon2);
     }
+
+    void disconnectMidConfirmClearsBusyAndRelockAbortsFollowUp() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString sockPath = dir.path() + QStringLiteral("/mid-drop.sock");
+
+        QLocalServer server;
+        QVERIFY(server.listen(sockPath));
+
+        QLocalSocket* peer = nullptr;
+        QString capturedReqCmdId;
+        bool followUpPanicSent = false;
+
+        QObject::connect(&server, &QLocalServer::newConnection, &server, [&]() {
+            peer = server.nextPendingConnection();
+            auto sendLine = [peer](const QJsonObject& obj) {
+                QByteArray line = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+                line.append('\n');
+                peer->write(line);
+                peer->flush();
+            };
+
+            sendLine(QJsonObject{
+                {QStringLiteral("v"), 1},
+                {QStringLiteral("type"), QStringLiteral("hello")},
+                {QStringLiteral("seq"), 1},
+                {QStringLiteral("ts_ms"), 1790000000000LL},
+                {QStringLiteral("payload"), QJsonObject{
+                    {QStringLiteral("protocol_version"), 1},
+                    {QStringLiteral("build_mode"), QStringLiteral("paper")},
+                    {QStringLiteral("capabilities"), QJsonArray{QStringLiteral("uds")}},
+                    {QStringLiteral("engine_instance_id"), QStringLiteral("0192f0a8-1111-7000-8000-000000000077")},
+                }},
+            });
+
+            QObject::connect(peer, &QLocalSocket::readyRead, peer, [&]() {
+                while (peer->canReadLine()) {
+                    const QJsonObject env = QJsonDocument::fromJson(peer->readLine().trimmed()).object();
+                    if (env.value(QStringLiteral("type")).toString() == QStringLiteral("command")) {
+                        const QJsonObject p = env.value(QStringLiteral("payload")).toObject();
+                        const QString cmd = p.value(QStringLiteral("cmd")).toString();
+                        if (cmd == QStringLiteral("request_confirm")) {
+                            capturedReqCmdId = p.value(QStringLiteral("cmd_id")).toString();
+                            // Intentionally DO NOT reply yet so command stays in-flight!
+                        } else if (cmd == QStringLiteral("panic_flatten")) {
+                            followUpPanicSent = true;
+                        }
+                    }
+                }
+            });
+        });
+
+        botui::StateStore store;
+        botui::IpcClient client(&store);
+        botui::CommandService commands(&store, &client);
+        client.connectToDaemon(sockPath);
+
+        QVERIFY(waitUntil([&]() { return store.connectionState() == QStringLiteral("connected"); }, 2000));
+        store.setControlsUnlocked(true);
+
+        // 1. Start confirmed action -> busy becomes true while awaiting request_confirm reply
+        commands.executeConfirmedAction(QStringLiteral("panic_flatten"));
+        QCOMPARE(commands.busy(), true);
+        QVERIFY(waitUntil([&]() { return !capturedReqCmdId.isEmpty(); }, 2000));
+
+        // Sever connection before command_result arrives -> busy MUST reset to false!
+        QVERIFY(peer != nullptr);
+        peer->disconnectFromServer();
+        QVERIFY(waitUntil([&]() { return store.connectionState() != QStringLiteral("connected"); }, 2000));
+        QCOMPARE(commands.busy(), false);
+
+        // 2. Reconnect, unlock, start request_confirm, then immediately lock controls before reply arrives:
+        // follow-up panic_flatten MUST be aborted!
+        capturedReqCmdId.clear();
+        QVERIFY(waitUntil([&]() { return store.connectionState() == QStringLiteral("connected"); }, 3000));
+        store.setControlsUnlocked(true);
+        commands.executeConfirmedAction(QStringLiteral("panic_flatten"));
+        QVERIFY(waitUntil([&]() { return !capturedReqCmdId.isEmpty(); }, 2000));
+
+        // Operator locks controls before server replies with nonce
+        store.setControlsUnlocked(false);
+
+        QByteArray nonceReply = QJsonDocument(QJsonObject{
+            {QStringLiteral("v"), 1},
+            {QStringLiteral("type"), QStringLiteral("command_result")},
+            {QStringLiteral("seq"), 2},
+            {QStringLiteral("ts_ms"), 1790000000500LL},
+            {QStringLiteral("payload"), QJsonObject{
+                {QStringLiteral("cmd_id"), capturedReqCmdId},
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("code"), QStringLiteral("confirm_issued")},
+                {QStringLiteral("message"), QStringLiteral("nonce issued")},
+                {QStringLiteral("confirm_nonce"), QStringLiteral("nonce-after-lock")},
+                {QStringLiteral("expires_at_ms"), QDateTime::currentMSecsSinceEpoch() + 9000},
+            }},
+        }).toJson(QJsonDocument::Compact);
+        nonceReply.append('\n');
+        peer->write(nonceReply);
+        peer->flush();
+
+        QTest::qWait(150);
+        QCOMPARE(followUpPanicSent, false);
+        QCOMPARE(commands.busy(), false);
+
+        client.disconnectFromDaemon();
+    }
 };
 
 QTEST_MAIN(IpcUdsIntegrationTest)

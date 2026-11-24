@@ -151,6 +151,7 @@ public:
 
     EnvelopeOutcome applyEnvelope(const QJsonObject& env);
     void resetSessionSeq();
+    void setExpectedKlinesReqId(const QString& reqId) { m_expectedKlinesReqId = reqId; }
 
 signals:
     void connectionChanged();
@@ -211,6 +212,7 @@ private:
     QString m_chartSymbol = QStringLiteral("BTCUSDT");
     bool m_userChoseChartSymbol = false;
     QString m_chartTf = QStringLiteral("15m");
+    QString m_expectedKlinesReqId;
     QVariantList m_klines;
 
     QSet<QString> m_notifiedAlertIds;
