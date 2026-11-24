@@ -18,6 +18,7 @@ pub struct S1TrendPullback {
     require_obi_filter: bool,
     obi_min: f64,
     cooldown_bars: u32,
+    allow_short: bool,
 }
 
 impl S1TrendPullback {
@@ -30,7 +31,15 @@ impl S1TrendPullback {
             require_obi_filter: false,
             obi_min: 0.05,
             cooldown_bars: DEFAULT_EXIT_COOLDOWN_BARS,
+            allow_short: false,
         }
+    }
+
+    /// Enable or disable Short side evaluation on venues that support shorting (§6.4.1).
+    #[must_use]
+    pub const fn with_allow_short(mut self, allow_short: bool) -> Self {
+        self.allow_short = allow_short;
+        self
     }
 
     /// Enable or disable the optional soft `OBI_smooth >= +0.05` filter (§6.4).
@@ -39,6 +48,125 @@ impl S1TrendPullback {
         self.require_obi_filter = enabled;
         self
     }
+
+    #[allow(clippy::too_many_lines)]
+    fn evaluate_short(&self, ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
+        let htf_bearish =
+            ctx.htf.ready && ctx.htf.close < ctx.htf.ema50 && ctx.htf.ema50_falling_3bars;
+        if !htf_bearish {
+            logs.push(GateLog::fail(
+                "htf_regime",
+                "HTF 4h regime not bearish or not warmed up",
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+        logs.push(GateLog::pass(
+            "htf_regime",
+            format!(
+                "4h close {:.4} < EMA50 {:.4} (falling 3 bars)",
+                ctx.htf.close, ctx.htf.ema50
+            ),
+        ));
+
+        let (
+            Some(ema21),
+            Some(ema55),
+            Some(ema200),
+            Some(rsi),
+            Some(prev_rsi),
+            Some(atr),
+            Some(adx),
+            Some(plus_di),
+            Some(minus_di),
+            Some(max_high_3),
+            Some(max_high_5),
+        ) = (
+            ctx.indicators.ema21,
+            ctx.indicators.ema55,
+            ctx.indicators.ema200,
+            ctx.indicators.rsi14,
+            ctx.indicators.prev_rsi14,
+            ctx.indicators.atr14,
+            ctx.indicators.adx14,
+            ctx.indicators.plus_di,
+            ctx.indicators.minus_di,
+            ctx.indicators.max_high_3,
+            ctx.indicators.max_high_5,
+        )
+        else {
+            logs.push(GateLog::fail("warmup", "S1 Short indicators warming up"));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        };
+
+        let close = ctx.bar.close;
+        if atr <= 0.0
+            || !(ema21 < ema55 && close < ema200)
+            || !(max_high_3 >= ema21 - 0.1 * atr && close < ema21)
+            || !((38.0..=60.0).contains(&rsi) && rsi < prev_rsi)
+            || !(adx >= 20.0 && minus_di > plus_di)
+            || (close - ema21).abs() > 1.5 * atr
+        {
+            logs.push(GateLog::fail(
+                "s1_short_rules",
+                "S1 Short mirror conditions not met",
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let stop_f = max_high_5.max(close + 1.5 * atr) + 0.1 * atr;
+        let r_dist = stop_f - close;
+        if r_dist <= 0.0 {
+            logs.push(GateLog::fail("stop_distance", "non-positive Short R distance"));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+        let tp1_f = close - 1.5 * r_dist;
+        let tp2_f = close - 3.0 * r_dist;
+
+        let (Some(entry_dec), Some(stop_dec), Some(tp1_dec), Some(tp2_dec), Some(atr_dec)) = (
+            f64_to_decimal(close),
+            f64_to_decimal(stop_f),
+            f64_to_decimal(tp1_f),
+            f64_to_decimal(tp2_f),
+            f64_to_decimal(atr),
+        ) else {
+            logs.push(GateLog::fail("decimal_conv", "failed to convert Short prices"));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        };
+
+        logs.push(GateLog::pass("s1_short_rules", "S1 Short mirror rules passed"));
+        SignalDecision {
+            intent: Some(StrategyEntryIntent {
+                venue: ctx.venue,
+                symbol: ctx.symbol.clone(),
+                direction: Direction::Short,
+                entry_ref: Price(entry_dec),
+                stop: Price(stop_dec),
+                tp1: Price(tp1_dec),
+                tp2: Some(Price(tp2_dec)),
+                atr: atr_dec,
+                size_mult: Decimal::ONE,
+                strategy: StrategyId::TrendPullback,
+                rationale: "S1 Short mirror pullback below EMA21".to_owned(),
+                gate_logs: logs.clone(),
+            }),
+            gate_logs: logs,
+        }
+    }
 }
 
 impl Strategy for S1TrendPullback {
@@ -46,9 +174,11 @@ impl Strategy for S1TrendPullback {
         StrategyId::TrendPullback
     }
 
-    fn supports(&self, _caps: &VenueCaps, dir: Direction) -> bool {
-        // M08 implements Long only; Short side is reserved for M16.
-        dir == Direction::Long
+    fn supports(&self, caps: &VenueCaps, dir: Direction) -> bool {
+        match dir {
+            Direction::Long => true,
+            Direction::Short => caps.can_short && self.allow_short,
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -62,6 +192,16 @@ impl Strategy for S1TrendPullback {
                 gate_logs: logs,
             };
         }
+
+        // If HTF is bearish and venue/config supports Short, evaluate Short mirror (§6.4.1).
+        if ctx.htf.ready
+            && ctx.htf.close < ctx.htf.ema50
+            && ctx.htf.ema50_falling_3bars
+            && self.supports(&ctx.venue_caps, Direction::Short)
+        {
+            return self.evaluate_short(ctx, logs);
+        }
+
         if !self.supports(&ctx.venue_caps, Direction::Long) {
             logs.push(GateLog::fail("venue_caps", "Long unsupported on venue"));
             return SignalDecision {

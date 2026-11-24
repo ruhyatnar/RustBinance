@@ -155,6 +155,10 @@ pub struct IndicatorSnapshot {
     pub min_low_3: Option<f64>,
     /// Minimum low across the last 5 closed bars (including current closed bar).
     pub min_low_5: Option<f64>,
+    /// Maximum high across the last 3 closed bars (including current closed bar).
+    pub max_high_3: Option<f64>,
+    /// Maximum high across the last 5 closed bars (including current closed bar).
+    pub max_high_5: Option<f64>,
 }
 
 /// Immutable evaluation context passed to [`Strategy::on_bar_close`] on every **closed** bar (§6.4–§6.5).

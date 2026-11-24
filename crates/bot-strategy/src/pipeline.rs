@@ -23,6 +23,7 @@ pub struct IndicatorFeed {
     vwap: SessionVwap,
     vol_sma20: VolumeSma,
     recent_lows: VecDeque<f64>,
+    recent_highs: VecDeque<f64>,
 }
 
 impl Default for IndicatorFeed {
@@ -49,6 +50,7 @@ impl IndicatorFeed {
             vwap: SessionVwap::new(),
             vol_sma20: VolumeSma::new(20),
             recent_lows: VecDeque::with_capacity(6),
+            recent_highs: VecDeque::with_capacity(6),
         }
     }
 
@@ -79,6 +81,11 @@ impl IndicatorFeed {
         }
         self.recent_lows.push_back(bar.low);
 
+        if self.recent_highs.len() >= 5 {
+            let _ = self.recent_highs.pop_front();
+        }
+        self.recent_highs.push_back(bar.high);
+
         self.snapshot()
     }
 
@@ -95,6 +102,14 @@ impl IndicatorFeed {
             .copied()
             .reduce(f64::min);
         let min_low_5 = self.recent_lows.iter().copied().reduce(f64::min);
+        let max_high_3 = self
+            .recent_highs
+            .iter()
+            .rev()
+            .take(3)
+            .copied()
+            .reduce(f64::max);
+        let max_high_5 = self.recent_highs.iter().copied().reduce(f64::max);
 
         IndicatorSnapshot {
             ema9: self.ema9.value(),
@@ -115,6 +130,8 @@ impl IndicatorFeed {
             vol_sma20: self.vol_sma20.value(),
             min_low_3,
             min_low_5,
+            max_high_3,
+            max_high_5,
         }
     }
 }

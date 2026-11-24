@@ -259,6 +259,8 @@ fn cost_gate_rejects_signal_when_tp1_below_3x_round_trip_cost() {
             vol_sma20: Some(1_000.0),
             min_low_3: Some(99.90),
             min_low_5: Some(99.90),
+            max_high_3: Some(100.50),
+            max_high_5: Some(100.50),
         },
         htf: HtfRegime {
             close: 100.0,
@@ -366,6 +368,8 @@ fn shadow_strategies_emit_shadow_signals_only_and_persist_to_signals_shadow() {
             vol_sma20: Some(2_000.0),
             min_low_3: Some(9.9),
             min_low_5: Some(9.8),
+            max_high_3: Some(10.5),
+            max_high_5: Some(10.5),
         },
         htf: HtfRegime {
             close: 10.5,
