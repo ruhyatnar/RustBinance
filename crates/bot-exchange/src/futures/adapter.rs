@@ -1,13 +1,24 @@
-//! USDⓈ-M Futures `FuturesAdapter` with safe pre-activation account checks and isolated `/fapi`
+//! USDⓈ-M Futures `FuturesAdapter` with WS API (`/ws-fapi/v1`) primary transport,
+//! REST (`/fapi/v1`) fallback + pre-activation account safety checks, and isolated `/fapi`
 //! rate-limit tracking (§4.5).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bot_types::{Symbol, Venue, VenueCaps};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
+use crate::auth::Ed25519Credentials;
 use crate::error::GatewayError;
+use crate::futures::rest::{
+    FuturesRestClient, build_place_order_params, parse_account_snapshot, parse_algo_order_ack,
+    parse_cancel_ack, parse_cancel_algo_ack, parse_order_ack, parse_order_snapshot,
+};
+use crate::futures::session::FuturesWsSession;
+use crate::futures::wire::{build_cancel_algo_order_params, build_place_algo_order_params};
 use crate::gateway::{
     AccountSnapshot, ActivationReport, AlgoOrderAck, CancelAlgoOrderAck, CancelAlgoOrderRequest,
     CancelOrderAck, CancelOrderListAck, CancelOrderListRequest, CancelOrderRequest,
@@ -90,24 +101,63 @@ pub struct FuturesAdapterConfig {
     pub max_leverage_cap: u32,
 }
 
+struct LiveTransport {
+    ws: FuturesWsSession,
+    rest: FuturesRestClient,
+}
+
 /// USDⓈ-M Futures adapter implementing [`ExchangeGateway`] and [`VenueAdapter`] (§4.5).
 pub struct FuturesAdapter {
     config: FuturesAdapterConfig,
     /// Isolated `/fapi` rate-limit tracker (completely separate from Spot).
     rate_limits: Arc<RateLimitTracker>,
-    /// Last inspected account setup snapshot (used for safe activation validation).
-    account_setup: FuturesAccountSetup,
+    /// Offline/injected account setup snapshot (used when constructed without live transport).
+    account_setup: Option<FuturesAccountSetup>,
+    /// WS API primary + REST fallback transport (present when constructed via `with_transport`).
+    transport: Option<LiveTransport>,
 }
 
 impl FuturesAdapter {
-    /// Construct a new [`FuturesAdapter`] with its own isolated `/fapi` rate-limit tracker.
+    /// Construct an offline [`FuturesAdapter`] with a static `account_setup` snapshot (for unit tests).
     #[must_use]
     pub fn new(config: FuturesAdapterConfig, account_setup: FuturesAccountSetup) -> Self {
         Self {
             config,
             rate_limits: Arc::new(RateLimitTracker::new()),
-            account_setup,
+            account_setup: Some(account_setup),
+            transport: None,
         }
+    }
+
+    /// Construct a network-capable [`FuturesAdapter`] using WS API (`/ws-fapi/v1`) as primary
+    /// transport and REST (`/fapi/v1`) for setup metadata and automatic fallback.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError::Http`] if the underlying REST client fails to initialize.
+    pub fn with_transport(
+        config: FuturesAdapterConfig,
+        creds: Arc<Ed25519Credentials>,
+        timeout: Duration,
+    ) -> Result<Self, GatewayError> {
+        let rate_limits = Arc::new(RateLimitTracker::new());
+        let rest = FuturesRestClient::new(
+            config.rest_base_url.clone(),
+            timeout,
+            Some(Arc::clone(&creds)),
+            Arc::clone(&rate_limits),
+        )?;
+        let ws = FuturesWsSession::new(
+            config.ws_api_url.clone(),
+            creds,
+            Arc::clone(&rate_limits),
+            timeout,
+        );
+        Ok(Self {
+            config,
+            rate_limits,
+            account_setup: None,
+            transport: Some(LiveTransport { ws, rest }),
+        })
     }
 
     /// Borrow the isolated `/fapi` rate-limit tracker.
@@ -121,20 +171,49 @@ impl FuturesAdapter {
     pub fn config(&self) -> &FuturesAdapterConfig {
         &self.config
     }
+
+    fn require_transport(&self, op: &str) -> Result<&LiveTransport, GatewayError> {
+        self.transport.as_ref().ok_or_else(|| {
+            GatewayError::Unsupported(format!(
+                "FuturesAdapter '{op}' requires transport (constructed via FuturesAdapter::with_transport)"
+            ))
+        })
+    }
 }
 
 #[async_trait]
 impl ExchangeGateway for FuturesAdapter {
-    async fn place_order(&self, _req: PlaceOrderRequest) -> Result<OrderAck, GatewayError> {
-        Err(GatewayError::Unsupported(
-            "live Futures REST/WS order placement is disabled in M15 (use PaperFuturesBroker or testnet-it)".into(),
-        ))
+    async fn place_order(&self, req: PlaceOrderRequest) -> Result<OrderAck, GatewayError> {
+        let tr = self.require_transport("place_order")?;
+        let params = build_place_order_params(&req);
+        match tr.ws.request("order.place", params).await {
+            Ok(val) => parse_order_ack(&val.to_string()),
+            Err(GatewayError::Transport(err)) => {
+                warn!(error = %err, "Futures WS order.place failed; falling back to REST /fapi/v1/order");
+                tr.rest.place_order(&req).await
+            }
+            Err(other) => Err(other),
+        }
     }
 
-    async fn cancel_order(&self, _req: CancelOrderRequest) -> Result<CancelOrderAck, GatewayError> {
-        Err(GatewayError::Unsupported(
-            "live Futures cancel_order is disabled in M15".into(),
-        ))
+    async fn cancel_order(&self, req: CancelOrderRequest) -> Result<CancelOrderAck, GatewayError> {
+        let tr = self.require_transport("cancel_order")?;
+        let mut params = BTreeMap::new();
+        params.insert("symbol".to_owned(), req.symbol.as_str().to_owned());
+        if let Some(id) = req.order_id {
+            params.insert("orderId".to_owned(), id.to_string());
+        }
+        if let Some(cid) = &req.orig_client_order_id {
+            params.insert("origClientOrderId".to_owned(), cid.clone());
+        }
+        match tr.ws.request("order.cancel", params).await {
+            Ok(val) => parse_cancel_ack(&val.to_string()),
+            Err(GatewayError::Transport(err)) => {
+                warn!(error = %err, "Futures WS order.cancel failed; falling back to REST /fapi/v1/order");
+                tr.rest.cancel_order(&req).await
+            }
+            Err(other) => Err(other),
+        }
     }
 
     async fn cancel_replace(
@@ -161,51 +240,81 @@ impl ExchangeGateway for FuturesAdapter {
         ))
     }
 
-    async fn query_order(&self, _req: QueryOrderRequest) -> Result<OrderSnapshot, GatewayError> {
-        Err(GatewayError::Unsupported(
-            "live Futures query_order is disabled in M15".into(),
-        ))
+    async fn query_order(&self, req: QueryOrderRequest) -> Result<OrderSnapshot, GatewayError> {
+        let tr = self.require_transport("query_order")?;
+        let mut params = BTreeMap::new();
+        params.insert("symbol".to_owned(), req.symbol.as_str().to_owned());
+        if let Some(id) = req.order_id {
+            params.insert("orderId".to_owned(), id.to_string());
+        }
+        if let Some(cid) = &req.orig_client_order_id {
+            params.insert("origClientOrderId".to_owned(), cid.clone());
+        }
+        match tr.ws.request("order.status", params).await {
+            Ok(val) => parse_order_snapshot(&val.to_string()),
+            Err(GatewayError::Transport(err)) => {
+                warn!(error = %err, "Futures WS order.status failed; falling back to REST /fapi/v1/order");
+                tr.rest.query_order(&req).await
+            }
+            Err(other) => Err(other),
+        }
     }
 
     async fn open_orders(
         &self,
-        _symbol: Option<&Symbol>,
+        symbol: Option<&Symbol>,
     ) -> Result<Vec<OrderSnapshot>, GatewayError> {
-        Err(GatewayError::Unsupported(
-            "live Futures open_orders is disabled in M15".into(),
-        ))
+        let tr = self.require_transport("open_orders")?;
+        tr.rest.open_orders(symbol).await
     }
 
     async fn account_snapshot(&self) -> Result<AccountSnapshot, GatewayError> {
-        Err(GatewayError::Unsupported(
-            "live Futures account_snapshot is disabled in M15".into(),
-        ))
+        let tr = self.require_transport("account_snapshot")?;
+        match tr.ws.request("v2/account.status", BTreeMap::new()).await {
+            Ok(val) => parse_account_snapshot(&val.to_string()),
+            Err(GatewayError::Transport(err)) => {
+                warn!(error = %err, "Futures WS v2/account.status failed; falling back to REST /fapi/v2/account");
+                tr.rest.account_snapshot().await
+            }
+            Err(other) => Err(other),
+        }
     }
 
     async fn exchange_info(&self) -> Result<ExchangeInfoSnapshot, GatewayError> {
-        Err(GatewayError::Unsupported(
-            "live Futures exchange_info is disabled in M15".into(),
-        ))
+        let tr = self.require_transport("exchange_info")?;
+        tr.rest.exchange_info().await
     }
 
     async fn place_algo_order(
         &self,
         req: PlaceAlgoOrderRequest,
     ) -> Result<AlgoOrderAck, GatewayError> {
-        let _params = crate::futures::wire::build_place_algo_order_params(&req)?;
-        Err(GatewayError::Unsupported(
-            "live Futures place_algo_order transport is disabled in M15".into(),
-        ))
+        let params = crate::futures::rest::json_map_to_btree(build_place_algo_order_params(&req)?);
+        let tr = self.require_transport("place_algo_order")?;
+        match tr.ws.request("algoOrder.place", params).await {
+            Ok(val) => parse_algo_order_ack(&val.to_string()),
+            Err(GatewayError::Transport(err)) => {
+                warn!(error = %err, "Futures WS algoOrder.place failed; falling back to REST /fapi/v1/algoOrder");
+                tr.rest.place_algo_order(&req).await
+            }
+            Err(other) => Err(other),
+        }
     }
 
     async fn cancel_algo_order(
         &self,
         req: CancelAlgoOrderRequest,
     ) -> Result<CancelAlgoOrderAck, GatewayError> {
-        let _params = crate::futures::wire::build_cancel_algo_order_params(&req)?;
-        Err(GatewayError::Unsupported(
-            "live Futures cancel_algo_order transport is disabled in M15".into(),
-        ))
+        let params = crate::futures::rest::json_map_to_btree(build_cancel_algo_order_params(&req)?);
+        let tr = self.require_transport("cancel_algo_order")?;
+        match tr.ws.request("algoOrder.cancel", params).await {
+            Ok(val) => parse_cancel_algo_ack(&val.to_string(), &req.symbol),
+            Err(GatewayError::Transport(err)) => {
+                warn!(error = %err, "Futures WS algoOrder.cancel failed; falling back to REST /fapi/v1/algoOrder");
+                tr.rest.cancel_algo_order(&req).await
+            }
+            Err(other) => Err(other),
+        }
     }
 }
 
@@ -220,8 +329,22 @@ impl VenueAdapter for FuturesAdapter {
     }
 
     async fn activate(&self) -> Result<ActivationReport, GatewayError> {
-        self.account_setup
-            .validate_for_activation(self.config.max_leverage_cap)?;
+        if let Some(tr) = &self.transport {
+            let setup = tr.rest.fetch_account_setup().await?;
+            setup.validate_for_activation(self.config.max_leverage_cap)?;
+            if let Err(err) = tr.ws.connect().await {
+                warn!(error = %err, "Futures WS connect failed during activate; REST fallback remains active");
+            }
+            return Ok(ActivationReport {
+                venue: Venue::UsdsFutures,
+                server_time_offset_ms: 0,
+                subscription_id: None,
+                symbols_loaded: 0,
+            });
+        }
+        if let Some(setup) = &self.account_setup {
+            setup.validate_for_activation(self.config.max_leverage_cap)?;
+        }
         Ok(ActivationReport {
             venue: Venue::UsdsFutures,
             server_time_offset_ms: 0,
@@ -232,6 +355,9 @@ impl VenueAdapter for FuturesAdapter {
 
     async fn deactivate(&self) -> Result<(), GatewayError> {
         // Hard rule #7: never cancel protective Algo orders on deactivate.
+        if let Some(tr) = &self.transport {
+            tr.ws.close().await;
+        }
         Ok(())
     }
 }

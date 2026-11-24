@@ -75,6 +75,12 @@ impl Ed25519Credentials {
         })
     }
 
+    /// Borrow the raw API key string for `X-MBX-APIKEY` header or WS `apiKey` parameter.
+    #[must_use]
+    pub fn api_key(&self) -> &str {
+        self.api_key.expose()
+    }
+
     /// Sign a canonical Binance WS API parameter map (alphabetically sorted `k=v&...`)
     /// using Ed25519 and return the Base64-encoded signature (case-sensitive).
     #[must_use]
