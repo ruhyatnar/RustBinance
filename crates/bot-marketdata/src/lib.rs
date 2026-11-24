@@ -3,6 +3,7 @@
 //! OBI/spread telemetry, and universe filtering (§3.3, §4.3, §6.2).
 
 pub mod error;
+pub mod futures;
 pub mod kline;
 pub mod orderbook;
 pub mod rest;
