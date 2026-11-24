@@ -43,6 +43,10 @@ add_library(binance-bot-ui-core STATIC
     src/Models.cpp
     src/StateStore.h
     src/StateStore.cpp
+    src/IpcClient.h
+    src/IpcClient.cpp
+    src/CommandService.h
+    src/CommandService.cpp
 )
 
 target_include_directories(binance-bot-ui-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -78,3 +82,25 @@ target_link_libraries(tst_decimal_and_store PRIVATE
     Qt6::Test
 )
 add_test(NAME tst_decimal_and_store COMMAND tst_decimal_and_store)
+
+set(BOT_MOCK_UDS_BIN "${BOT_REPO_ROOT}/target/debug/examples/mock_uds_daemon")
+add_custom_target(build_mock_uds_daemon
+    COMMAND cargo build --manifest-path "${BOT_REPO_ROOT}/Cargo.toml" -p bot-ipc --example mock_uds_daemon
+    BYPRODUCTS "${BOT_MOCK_UDS_BIN}"
+    COMMENT "Building Rust mock_uds_daemon example for UDS integration tests"
+)
+
+add_executable(tst_ipc_uds_integration
+    tests/tst_ipc_uds_integration.cpp
+)
+add_dependencies(tst_ipc_uds_integration build_mock_uds_daemon)
+target_compile_definitions(tst_ipc_uds_integration PRIVATE
+    BOT_REPO_ROOT="${BOT_REPO_ROOT}"
+    BOT_MOCK_UDS_BIN="${BOT_MOCK_UDS_BIN}"
+)
+target_compile_options(tst_ipc_uds_integration PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(tst_ipc_uds_integration PRIVATE
+    binance-bot-ui-core
+    Qt6::Test
+)
+add_test(NAME tst_ipc_uds_integration COMMAND tst_ipc_uds_integration)
