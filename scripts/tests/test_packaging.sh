@@ -76,6 +76,22 @@ test_install_preflight_binaries_check() {
   grep -q 'scripts/build.sh' "$ROOT/scripts/install-system.sh"
 }
 
+test_dockerfile_security_invariants() {
+  local df="$ROOT/packaging/Dockerfile"
+  [ -f "$df" ]
+  grep -q '^USER binancebot' "$df"
+  ! grep -qiE 'COPY.*(\.pem|api_key|\.env)' "$df"
+  grep -q 'ENTRYPOINT \["/usr/local/bin/binance-botd", "--config", "/etc/binance-bot/bot.toml"\]' "$df"
+}
+
+test_compose_invariants() {
+  local cf="$ROOT/packaging/compose.yaml"
+  [ -f "$cf" ]
+  grep -q '/etc/binance-bot:ro' "$cf"
+  grep -q '/var/lib/binance-bot' "$cf"
+  ! grep -qi 'mode=live' "$cf"
+}
+
 assert_ok "test_deps_syntax" test_deps_syntax
 assert_ok "test_deps_dry_run_all_managers" test_deps_dry_run_all_managers
 assert_ok "test_deps_headless_skips_qt" test_deps_headless_skips_qt
@@ -84,6 +100,8 @@ assert_ok "test_deps_unsupported_manager_message" test_deps_unsupported_manager
 assert_ok "test_install_syntax" test_install_syntax
 assert_ok "test_install_no_hardcoded_nologin" test_install_no_hardcoded_nologin
 assert_ok "test_install_preflight_binaries_check" test_install_preflight_binaries_check
+assert_ok "test_dockerfile_security_invariants" test_dockerfile_security_invariants
+assert_ok "test_compose_invariants" test_compose_invariants
 
 echo "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

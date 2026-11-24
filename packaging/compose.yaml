@@ -1,0 +1,25 @@
+services:
+  binance-botd:
+    build:
+      context: ..
+      dockerfile: packaging/Dockerfile
+    container_name: binance-botd
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+      - /run/binance-bot
+    volumes:
+      # Mount host config & keys read-only (default mode in bot.toml is paper).
+      - ./config:/etc/binance-bot:ro
+      - bot_data:/var/lib/binance-bot
+    # Expose local web cockpit only on loopback by default:
+    # ports:
+    #   - "127.0.0.1:8080:8080"
+
+volumes:
+  bot_data:
