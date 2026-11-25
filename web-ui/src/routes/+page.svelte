@@ -5,10 +5,42 @@
 	import PositionTable from '$lib/components/PositionTable.svelte';
 	import RiskGauge from '$lib/components/RiskGauge.svelte';
 	import SignalsFeed from '$lib/components/SignalsFeed.svelte';
+	import KpiCard from '$lib/components/ui/KpiCard.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Panel from '$lib/components/ui/Panel.svelte';
+	import { filterByVenue, filterEventsByVenue, type VenueFilter } from '$lib/filters/venue';
+	import { decimalDirectionIcon, decimalSign, formatDecimalString } from '$lib/format/decimal';
 
 	const snap = $derived(botStream.snapshot);
-	const primaryPos = $derived(snap?.positions[0] ?? null);
+	let venueFilter = $state<VenueFilter>('all');
+
+	const filteredPositions = $derived(
+		snap ? filterByVenue(snap.positions, venueFilter) : []
+	);
+	const filteredSignals = $derived(
+		snap ? filterByVenue(snap.signals_shadow, venueFilter) : []
+	);
+	const filteredEvents = $derived(
+		filterEventsByVenue(botStream.events, venueFilter)
+	);
+
+	const primaryPos = $derived(filteredPositions[0] ?? null);
 	const chartSymbol = $derived(primaryPos?.symbol ?? 'BTCUSDT');
+
+	function clampPct(numerator: string, denominator: string): number {
+		const n = Math.abs(Number(numerator));
+		const d = Math.abs(Number(denominator));
+		if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return 0;
+		return Math.min(100, Math.round((n / d) * 100));
+	}
+
+	const daySign = $derived(snap ? decimalSign(snap.risk.day_pnl_pct) : 0);
+	const heatPct = $derived(
+		snap ? clampPct(snap.risk.heat_pct, snap.risk.heat_max_pct) : 0
+	);
+	const ddPct = $derived(
+		snap ? clampPct(snap.risk.drawdown_pct, snap.risk.limits.kill_pct) : 0
+	);
 
 	async function handlePause(): Promise<void> {
 		await botStream.pause();
@@ -24,39 +56,93 @@
 </script>
 
 {#if !snap}
-	<div class="rounded-xl border border-slate-800 bg-slate-900/60 p-8 text-center text-sm text-slate-400">
-		Waiting for initial IPC snapshot… ({botStream.connectionState})
-	</div>
+	<Panel dotGrid={true}>
+		<div class="py-10 text-center font-mono text-xs text-ink-muted">
+			Waiting for initial IPC snapshot… ({botStream.connectionState})
+		</div>
+	</Panel>
 {:else}
-	<div class="space-y-4">
-		{#if botStream.canMutate}
-			<div class="flex flex-wrap items-center gap-2">
-				<button
-					type="button"
-					onclick={handlePause}
-					class="rounded-md border border-amber-500/60 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/25"
+	<div class="space-y-5">
+		<PageHeader title="Cockpit" subtitle="Real-time execution & risk telemetry">
+			{#snippet actions()}
+				<div
+					class="inline-flex items-center rounded border border-hairline bg-surface-inset p-0.5 font-mono text-[11px]"
+					role="group"
+					aria-label="Filter venue"
 				>
-					❚❚ Pause Entries
-				</button>
-				<button
-					type="button"
-					onclick={handleResume}
-					class="rounded-md border border-emerald-500/60 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25"
-				>
-					▶ Resume Entries
-				</button>
-			</div>
-		{/if}
+					{#each [
+						{ id: 'all', label: 'All' },
+						{ id: 'spot', label: 'Spot' },
+						{ id: 'futures', label: 'Futures' }
+					] as opt (opt.id)}
+						<button
+							type="button"
+							aria-pressed={venueFilter === opt.id}
+							onclick={() => (venueFilter = opt.id as VenueFilter)}
+							class={`rounded px-2.5 py-1 font-semibold transition ${
+								venueFilter === opt.id
+									? 'bg-surface-elevated text-ink-strong ring-1 ring-accent/50'
+									: 'text-ink-muted hover:text-ink'
+							}`}
+						>
+							{opt.label}
+						</button>
+					{/each}
+				</div>
 
-		<div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
-			<div class="space-y-4 lg:col-span-4">
-				<RiskGauge risk={snap.risk} />
-				<SignalsFeed signals={snap.signals_shadow} />
-			</div>
+				{#if botStream.canMutate}
+					<button
+						type="button"
+						onclick={handlePause}
+						class="rounded border border-warning/50 bg-warning/10 px-3 py-1.5 font-mono text-[11px] font-semibold text-warning transition hover:bg-warning/20"
+					>
+						❚❚ Pause Entries
+					</button>
+					<button
+						type="button"
+						onclick={handleResume}
+						class="rounded border border-positive/50 bg-positive/10 px-3 py-1.5 font-mono text-[11px] font-semibold text-positive transition hover:bg-positive/20"
+					>
+						▶ Resume Entries
+					</button>
+				{/if}
+			{/snippet}
+		</PageHeader>
 
-			<div class="space-y-4 lg:col-span-8">
+		<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+			<KpiCard
+				label="Equity"
+				value={formatDecimalString(snap.risk.equity, { decimals: 2 })}
+				sublabel="Account Aggregate (USDT)"
+				tone="neutral"
+			/>
+			<KpiCard
+				label="Day PnL"
+				value={formatDecimalString(snap.risk.day_pnl_pct, { signed: true, suffix: '%' })}
+				icon={decimalDirectionIcon(snap.risk.day_pnl_pct)}
+				sublabel={`Halt limit ${formatDecimalString(snap.risk.limits.daily_halt_pct, { suffix: '%' })} · Account`}
+				tone={daySign > 0 ? 'positive' : daySign < 0 ? 'danger' : 'neutral'}
+			/>
+			<KpiCard
+				label="Portfolio Heat"
+				value={`${formatDecimalString(snap.risk.heat_pct)}%`}
+				sublabel={`Max ${formatDecimalString(snap.risk.heat_max_pct)}% · ${snap.risk.open_positions}/${snap.risk.max_positions} pos`}
+				tone={heatPct >= 80 ? 'danger' : heatPct >= 50 ? 'warning' : 'telemetry'}
+				progressPct={heatPct}
+			/>
+			<KpiCard
+				label="Drawdown"
+				value={formatDecimalString(snap.risk.drawdown_pct, { suffix: '%' })}
+				sublabel={`Kill limit ${formatDecimalString(snap.risk.limits.kill_pct, { suffix: '%' })} · Account`}
+				tone={ddPct >= 70 ? 'danger' : 'warning'}
+				progressPct={ddPct}
+			/>
+		</div>
+
+		<div class="grid grid-cols-1 gap-4 xl:grid-cols-12">
+			<div class="space-y-4 xl:col-span-8">
 				<PositionTable
-					positions={snap.positions}
+					positions={filteredPositions}
 					canMutate={botStream.canMutate}
 					onClosePosition={handleClosePosition}
 				/>
@@ -69,8 +155,13 @@
 					tp1Price={primaryPos?.tp1 ?? null}
 				/>
 			</div>
+
+			<div class="space-y-4 xl:col-span-4">
+				<RiskGauge risk={snap.risk} />
+				<SignalsFeed signals={filteredSignals} />
+			</div>
 		</div>
 
-		<EventLog events={botStream.events} limit={25} />
+		<EventLog events={filteredEvents} limit={25} />
 	</div>
 {/if}
