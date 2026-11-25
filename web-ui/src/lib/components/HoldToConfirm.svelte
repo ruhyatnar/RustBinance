@@ -67,8 +67,8 @@
 
 	const colorClass = $derived(
 		variant === 'danger'
-			? 'border-red-500/80 bg-red-700/90 hover:bg-red-600 text-white'
-			: 'border-amber-500/80 bg-amber-600/90 hover:bg-amber-500 text-slate-950'
+			? 'border-danger-solid/80 bg-danger-solid/90 hover:bg-danger-solid text-white'
+			: 'border-warning/70 bg-warning/90 hover:bg-warning text-canvas'
 	);
 </script>
 
@@ -81,14 +81,14 @@
 	onpointercancel={cancelHold}
 	onkeydown={handleKeyDown}
 	aria-label={`${label} (hold ${(holdMs / 1000).toFixed(1)}s)`}
-	class={`relative overflow-hidden rounded-md border px-3 py-1.5 text-xs font-bold tracking-wide select-none transition disabled:opacity-50 ${colorClass}`}
+	class={`relative overflow-hidden rounded border px-3 py-1 font-mono text-[11px] font-bold tracking-wider uppercase select-none transition disabled:cursor-not-allowed disabled:opacity-45 ${colorClass}`}
 >
 	<span
 		class="pointer-events-none absolute inset-y-0 left-0 bg-white/30 transition-[width] duration-75"
 		style={`width: ${progressPct}%`}
 	></span>
 	<span class="relative z-10 flex items-center gap-1.5">
-		<span>■</span>
+		<span aria-hidden="true">■</span>
 		<span>{busy ? 'Executing…' : holding ? `Hold ${progressPct}%` : `${label} (hold)`}</span>
 	</span>
 </button>

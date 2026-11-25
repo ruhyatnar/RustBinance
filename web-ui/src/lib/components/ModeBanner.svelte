@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { AuthScope, EngineMode, TradingMode, Venue } from '$lib/api/types';
-	import { decimalDirectionIcon, formatDecimalString } from '$lib/format/decimal';
+	import StatusPill from '$lib/components/ui/StatusPill.svelte';
+	import { decimalDirectionIcon, decimalSign, formatDecimalString } from '$lib/format/decimal';
 	import HoldToConfirm from './HoldToConfirm.svelte';
 
 	interface Props {
@@ -19,6 +20,7 @@
 		onPanic: () => void | Promise<void>;
 		onToggleControls: () => void;
 		onDisconnect: () => void;
+		onToggleMenu?: () => void;
 	}
 
 	let {
@@ -36,72 +38,90 @@
 		canMutate,
 		onPanic,
 		onToggleControls,
-		onDisconnect
+		onDisconnect,
+		onToggleMenu
 	}: Props = $props();
 
 	const modeBannerClass = $derived(
 		buildMode === 'live'
-			? 'live-banner-stripes text-white border-red-400'
+			? 'live-banner-stripes text-white border-red-400 shadow-sm'
 			: buildMode === 'testnet'
 				? 'bg-amber-400 text-slate-950 border-amber-300'
 				: 'bg-sky-600 text-white border-sky-400'
 	);
 
-	const enginePillClass = $derived(
+	const engineTone = $derived(
 		engineMode === 'Ready'
-			? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+			? 'positive'
 			: engineMode === 'Paused' || engineMode === 'Syncing' || engineMode === 'Starting'
-				? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-				: 'bg-red-500/20 text-red-200 border-red-500/60'
+				? 'warning'
+				: 'danger'
 	);
 
 	const engineIcon = $derived(
 		engineMode === 'Ready' ? '●' : engineMode === 'Paused' ? '❚❚' : '⚠'
 	);
+
+	const daySign = $derived(decimalSign(dayPnlPct));
 </script>
 
-<header class="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/95 backdrop-blur">
-	<div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+<header class="sticky top-0 z-40 border-b border-hairline bg-canvas/95 backdrop-blur">
+	<div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2 lg:px-4">
 		<div class="flex flex-wrap items-center gap-2">
+			{#if onToggleMenu}
+				<button
+					type="button"
+					onclick={onToggleMenu}
+					aria-label="Toggle navigation"
+					class="inline-flex items-center justify-center rounded border border-hairline bg-surface px-2 py-1 text-xs text-ink-muted hover:border-hairline-strong hover:text-ink-strong lg:hidden"
+				>
+					☰
+				</button>
+			{/if}
+
 			<span
-				class={`inline-flex items-center gap-1.5 rounded border px-2.5 py-0.5 text-xs font-extrabold tracking-wider uppercase ${modeBannerClass}`}
+				class={`inline-flex items-center gap-1.5 rounded border px-2.5 py-0.5 font-mono text-[11px] font-extrabold tracking-wider uppercase ${modeBannerClass}`}
 			>
 				<span>{buildMode.toUpperCase()}</span>
 			</span>
 
 			<span
-				class="inline-flex items-center rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs font-semibold text-slate-200 uppercase"
+				class="inline-flex items-center gap-1 rounded border border-hairline-strong bg-surface px-2 py-0.5 font-mono text-[11px] font-semibold text-ink-strong uppercase"
 			>
-				{venue.toUpperCase()}
+				<span>{venue.toUpperCase()}</span>
+				{#if venue === 'futures'}
+					<span class="text-[10px] font-normal text-warning">3× ISO</span>
+				{/if}
 			</span>
 
-			<span
-				class={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-bold uppercase ${enginePillClass}`}
-			>
-				<span>{engineIcon}</span>
-				<span>{engineMode.toUpperCase()}</span>
-			</span>
+			<StatusPill label={engineMode.toUpperCase()} icon={engineIcon} tone={engineTone} />
 		</div>
 
-		<div class="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-xs text-slate-200">
+		<div class="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-ink tabular-nums">
 			<span>
-				<span class="text-slate-400">Eq</span>
-				<strong class="ml-1 text-white">{formatDecimalString(equity, { decimals: 2 })}</strong>
+				<span class="text-ink-dim uppercase">Eq</span>
+				<strong class="ml-1 text-ink-strong">{formatDecimalString(equity, { decimals: 2 })}</strong>
 			</span>
 			<span>
-				<span class="text-slate-400">Day</span>
-				<strong class="ml-1">
+				<span class="text-ink-dim uppercase">Day</span>
+				<strong
+					class={`ml-1 ${
+						daySign > 0 ? 'text-positive' : daySign < 0 ? 'text-danger' : 'text-ink-strong'
+					}`}
+				>
 					{decimalDirectionIcon(dayPnlPct)}
 					{formatDecimalString(dayPnlPct, { signed: true, suffix: '%' })}
 				</strong>
 			</span>
 			<span>
-				<span class="text-slate-400">DD</span>
-				<strong class="ml-1">{formatDecimalString(drawdownPct, { suffix: '%' })}</strong>
+				<span class="text-ink-dim uppercase">DD</span>
+				<strong class="ml-1 text-warning">{formatDecimalString(drawdownPct, { suffix: '%' })}</strong>
 			</span>
-			<span class="hidden sm:inline text-slate-300">WS {wsLatencyMs}ms</span>
-			<span class="hidden md:inline text-slate-300">W {weightUsed}/{weightLimit}</span>
-			<span class="text-amber-300" title="Active alerts">🔔 {alertCount}</span>
+			<span class="hidden text-ink-muted sm:inline">WS {wsLatencyMs}ms</span>
+			<span class="hidden text-ink-muted md:inline">W {weightUsed}/{weightLimit}</span>
+			<span class={alertCount > 0 ? 'text-warning' : 'text-ink-dim'} title="Active alerts">
+				🔔 {alertCount}
+			</span>
 		</div>
 
 		<div class="flex items-center gap-2">
@@ -109,17 +129,17 @@
 				<button
 					type="button"
 					onclick={onToggleControls}
-					class={`rounded border px-2.5 py-1 text-xs font-semibold transition ${
+					class={`rounded border px-2.5 py-1 font-mono text-[11px] font-semibold transition ${
 						canMutate
-							? 'border-amber-500/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
-							: 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
+							? 'border-warning/60 bg-warning/15 text-warning hover:bg-warning/25'
+							: 'border-hairline bg-surface text-ink-muted hover:border-hairline-strong hover:text-ink-strong'
 					}`}
 				>
 					{canMutate ? '🔓 Controls ON' : '🔒 Read-Only'}
 				</button>
 			{:else}
 				<span
-					class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs font-medium text-slate-400"
+					class="rounded border border-hairline bg-surface px-2 py-1 font-mono text-[11px] font-medium text-ink-dim"
 				>
 					🔒 Read-Only Token
 				</span>
@@ -132,7 +152,7 @@
 			<button
 				type="button"
 				onclick={onDisconnect}
-				class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+				class="rounded border border-hairline bg-surface px-2.5 py-1 font-mono text-[11px] text-ink-muted transition hover:border-hairline-strong hover:text-ink-strong"
 			>
 				Logout
 			</button>
