@@ -45,6 +45,32 @@ describe('Safety & core UI components', () => {
 		expect(onConfirm).toHaveBeenCalledTimes(1);
 	});
 
+	it('HoldToConfirm cancels pending hold timer on unmount and when disabled mid-hold', async () => {
+		const onConfirm = vi.fn();
+		const { rerender, unmount } = render(HoldToConfirm, {
+			props: {
+				label: 'PANIC FLATTEN',
+				holdMs: 1500,
+				disabled: false,
+				onConfirm
+			}
+		});
+
+		const btn = screen.getByRole('button', { name: /PANIC FLATTEN/i });
+		await fireEvent.pointerDown(btn);
+		await vi.advanceTimersByTimeAsync(500);
+		await rerender({ label: 'PANIC FLATTEN', holdMs: 1500, disabled: true, onConfirm });
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(onConfirm).not.toHaveBeenCalled();
+
+		await rerender({ label: 'PANIC FLATTEN', holdMs: 1500, disabled: false, onConfirm });
+		await fireEvent.pointerDown(btn);
+		await vi.advanceTimersByTimeAsync(500);
+		unmount();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(onConfirm).not.toHaveBeenCalled();
+	});
+
 	it('ModeBanner displays mode, venue, engine state, and hides PANIC in read-only mode', () => {
 		const { rerender } = render(ModeBanner, {
 			props: {

@@ -67,4 +67,26 @@ describe('VenueSwitcher & VenueSwitchDialog contract (§11.6)', () => {
 		expect(screen.getByTestId('switch-blocked-reason')).toHaveTextContent(/Halted/i);
 		expect(screen.getByTestId('confirm-switch-btn')).toBeDisabled();
 	});
+
+	it('resets policy back to safe default "drain" when dialog is closed and reopened after selecting flatten', async () => {
+		const props = {
+			open: true,
+			currentVenue: 'spot' as const,
+			targetVenue: 'futures' as const,
+			engineMode: 'Ready' as const,
+			openPositionsCount: 1,
+			onConfirm: vi.fn()
+		};
+		const { rerender } = render(VenueSwitchDialog, { props });
+
+		await fireEvent.click(screen.getByRole('radio', { name: /Tutup semua sekarang/i }));
+		expect(screen.getByRole('button', { name: /Flatten & Alihkan/i })).toBeInTheDocument();
+
+		await rerender({ ...props, open: false });
+		await rerender({ ...props, open: true });
+
+		const drainRadio = screen.getByRole('radio', { name: /Kelola sampai selesai/i });
+		expect(drainRadio).toBeChecked();
+		expect(screen.getByTestId('confirm-switch-btn')).toBeInTheDocument();
+	});
 });

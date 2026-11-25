@@ -30,6 +30,12 @@
 
 	let policy = $state<SwitchPolicyOption>('drain');
 
+	$effect(() => {
+		if (!open) {
+			policy = 'drain';
+		}
+	});
+
 	const blockedReason = $derived(
 		rejectionReason ??
 			(engineMode === 'Halted' || engineMode === 'Killed'

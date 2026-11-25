@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { CandlestickSeries, createChart, type UTCTimestamp } from 'lightweight-charts';
+	import {
+		CandlestickSeries,
+		createChart,
+		type IChartApi,
+		type IPriceLine,
+		type ISeriesApi,
+		type UTCTimestamp
+	} from 'lightweight-charts';
 	import type { KlineBar } from '$lib/api/types';
 	import Panel from '$lib/components/ui/Panel.svelte';
 
@@ -25,6 +32,9 @@
 	}: Props = $props();
 
 	let container: HTMLDivElement | undefined = $state();
+	let chartApi = $state<IChartApi | null>(null);
+	let seriesApi = $state<ISeriesApi<'Candlestick'> | null>(null);
+	let activePriceLines: IPriceLine[] = [];
 
 	onMount(() => {
 		if (!container || typeof ResizeObserver === 'undefined') return;
@@ -49,6 +59,36 @@
 			wickDownColor: '#f87171'
 		});
 
+		chartApi = chart;
+		seriesApi = series;
+
+		const ro = new ResizeObserver(() => {
+			if (container && container.clientWidth > 0) {
+				chart.applyOptions({ width: container.clientWidth });
+			}
+		});
+		ro.observe(container);
+
+		return () => {
+			ro.disconnect();
+			activePriceLines = [];
+			seriesApi = null;
+			chartApi = null;
+			chart.remove();
+		};
+	});
+
+	$effect(() => {
+		const chart = chartApi;
+		if (!chart) return;
+		chart.applyOptions({ height });
+	});
+
+	$effect(() => {
+		const chart = chartApi;
+		const series = seriesApi;
+		if (!chart || !series) return;
+
 		const mapped = bars.map((b) => ({
 			time: Math.floor(b.time / 1000) as UTCTimestamp,
 			open: Number(b.open),
@@ -57,47 +97,40 @@
 			close: Number(b.close)
 		}));
 
+		series.setData(mapped);
 		if (mapped.length > 0) {
-			series.setData(mapped);
 			chart.timeScale().fitContent();
 		}
+	});
 
-		if (entryPrice) {
-			series.createPriceLine({
-				price: Number(entryPrice),
-				color: '#50d8e9',
-				lineWidth: 1,
-				title: 'Entry'
-			});
-		}
-		if (stopPrice) {
-			series.createPriceLine({
-				price: Number(stopPrice),
-				color: '#ffb4ab',
-				lineWidth: 1,
-				title: 'SL'
-			});
-		}
-		if (tp1Price) {
-			series.createPriceLine({
-				price: Number(tp1Price),
-				color: '#34d399',
-				lineWidth: 1,
-				title: 'TP1'
-			});
-		}
+	$effect(() => {
+		const series = seriesApi;
+		if (!series) return;
 
-		const ro = new ResizeObserver(() => {
-			if (container) {
-				chart.applyOptions({ width: container.clientWidth });
-			}
-		});
-		ro.observe(container);
+		for (const line of activePriceLines) {
+			series.removePriceLine(line);
+		}
+		activePriceLines = [];
 
-		return () => {
-			ro.disconnect();
-			chart.remove();
-		};
+		const specs: Array<{ raw: string | null; color: string; title: string }> = [
+			{ raw: entryPrice, color: '#50d8e9', title: 'Entry' },
+			{ raw: stopPrice, color: '#ffb4ab', title: 'SL' },
+			{ raw: tp1Price, color: '#34d399', title: 'TP1' }
+		];
+
+		for (const spec of specs) {
+			if (!spec.raw) continue;
+			const price = Number(spec.raw);
+			if (!Number.isFinite(price)) continue;
+			activePriceLines.push(
+				series.createPriceLine({
+					price,
+					color: spec.color,
+					lineWidth: 1,
+					title: spec.title
+				})
+			);
+		}
 	});
 </script>
 

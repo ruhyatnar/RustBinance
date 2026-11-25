@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
+
 	interface Props {
 		label: string;
 		holdMs?: number;
@@ -35,6 +37,16 @@
 			fireTimer = null;
 		}
 	}
+
+	$effect(() => {
+		if (disabled) {
+			cancelHold();
+		}
+	});
+
+	onDestroy(() => {
+		cancelHold();
+	});
 
 	function startHold(): void {
 		if (disabled || busy || holding) return;
