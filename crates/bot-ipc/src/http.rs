@@ -17,8 +17,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine as _;
 use bot_types::Venue;
 use futures_util::SinkExt as _;
+use rand::Rng as _;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -839,7 +841,8 @@ fn serve_static_asset(root: &std::path::Path, req_path: &str) -> Response {
     let Ok(bytes) = std::fs::read(&candidate) else {
         return with_security_headers((StatusCode::NOT_FOUND, "not found").into_response());
     };
-    let content_type = match candidate.extension().and_then(|e| e.to_str()) {
+    let ext = candidate.extension().and_then(|e| e.to_str());
+    let content_type = match ext {
         Some("html") => "text/html; charset=utf-8",
         Some("js" | "mjs") => "application/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
@@ -847,11 +850,71 @@ fn serve_static_asset(root: &std::path::Path, req_path: &str) -> Response {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
+        Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         _ => "application/octet-stream",
     };
+
+    if ext == Some("html")
+        && let Ok(html) = String::from_utf8(bytes.clone())
+    {
+        let mut nonce_bytes = [0_u8; 16];
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
+        let patched_html = html.replace("<script>", &format!("<script nonce=\"{nonce}\">"));
+        let csp = format!(
+            "default-src 'self'; script-src 'self' 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; frame-ancestors 'none'"
+        );
+        let mut resp = (StatusCode::OK, patched_html).into_response();
+        resp.headers_mut()
+            .insert("content-type", HeaderValue::from_static(content_type));
+        if let Ok(csp_val) = HeaderValue::from_str(&csp) {
+            resp.headers_mut()
+                .insert("content-security-policy", csp_val);
+        }
+        resp.headers_mut().insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
+        return resp;
+    }
+
     let mut resp = (StatusCode::OK, bytes).into_response();
     resp.headers_mut()
         .insert("content-type", HeaderValue::from_static(content_type));
     with_security_headers(resp)
+}
+
+#[cfg(test)]
+mod static_csp_tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn serve_static_html_injects_per_request_script_nonce_and_csp() {
+        let dir = tempfile::TempDir::new().expect("tmpdir");
+        let html = "<!doctype html><html><body><script>console.log('boot');</script></body></html>";
+        std::fs::write(dir.path().join("index.html"), html).expect("write index.html");
+
+        let resp = serve_static_asset(dir.path(), "/");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok())
+            .expect("csp header")
+            .to_owned();
+        assert!(csp.contains("script-src 'self' 'nonce-"));
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
+
+        let nonce_start = csp.find("'nonce-").expect("nonce") + "'nonce-".len();
+        let nonce_end = csp[nonce_start..].find('\'').expect("closing quote") + nonce_start;
+        let nonce = &csp[nonce_start..nonce_end];
+        assert_ne!(nonce, "");
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let body_str = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(body_str.contains(&format!("<script nonce=\"{nonce}\">")));
+    }
 }
