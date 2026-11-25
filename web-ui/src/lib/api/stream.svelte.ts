@@ -395,6 +395,24 @@ export function createBotStream(deps: StreamDeps = {}) {
 		return res;
 	}
 
+	async function switchVenue(
+		target: 'spot' | 'futures',
+		onOpenPositions: 'drain' | 'refuse' | 'flatten'
+	): Promise<CommandResultPayload> {
+		const client = requireMutateClient();
+		let nonce = '';
+		if (onOpenPositions === 'flatten') {
+			const req = await client.requestConfirm('switch_venue');
+			if (!req.ok || !req.confirm_nonce) {
+				throw new ApiError(400, req.code || 'invalid_confirm_nonce', req.message);
+			}
+			nonce = req.confirm_nonce;
+		}
+		const res = await client.switchVenue(target, onOpenPositions, nonce);
+		lastCommandResult = res;
+		return res;
+	}
+
 	function getHttpClient(): IpcHttpClient | null {
 		return httpClient;
 	}
@@ -460,6 +478,7 @@ export function createBotStream(deps: StreamDeps = {}) {
 		disableStrategy,
 		ackAlert,
 		executeConfirmedAction,
+		switchVenue,
 		getHttpClient
 	};
 }

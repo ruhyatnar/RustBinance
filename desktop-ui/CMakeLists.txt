@@ -95,6 +95,8 @@ qt_add_qml_module(binance-bot-qml
         qml/components/DepthLadder.qml
         qml/components/EventList.qml
         qml/components/CandlesChart.qml
+        qml/components/VenueSwitcher.qml
+        qml/components/VenueSwitchDialog.qml
         qml/pages/CockpitPage.qml
         qml/pages/PositionsPage.qml
         qml/pages/SignalsPage.qml

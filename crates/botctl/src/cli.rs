@@ -77,6 +77,21 @@ pub enum Command {
         #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
         socket: PathBuf,
     },
+    /// Atomically switch active trading venue (`spot` or `futures`, §3.5).
+    SwitchVenue {
+        /// Target venue (`spot` or `futures`).
+        #[arg(long)]
+        target: String,
+        /// Policy for open positions on the old venue (`drain`, `refuse`, or `flatten`).
+        #[arg(long, default_value = "drain")]
+        on_open_positions: String,
+        /// Required when `--on-open-positions flatten` is specified.
+        #[arg(long)]
+        confirm: bool,
+        /// Path to daemon Unix domain socket.
+        #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
+        socket: PathBuf,
+    },
 }
 
 /// Subcommands under `binance-botctl config`.

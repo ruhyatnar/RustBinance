@@ -5,23 +5,37 @@ mod ipc_backend;
 mod logging;
 mod sd_notify;
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use bot_config::{BotConfig, ConfigSourcePaths, load_from_paths};
-use bot_engine::EngineActor;
-use bot_exchange::VenueAdapter;
+use bot_engine::{EngineActor, USER_EVENT_CHANNEL_CAPACITY};
+use bot_exchange::futures::{FuturesAdapter, FuturesAdapterConfig, FuturesRestClient};
+use bot_exchange::{
+    Ed25519Credentials, GatewayEvent, SpotAdapter, SpotAdapterConfig, SpotRestClient,
+    SpotSessionConfig, VenueAdapter,
+};
+use bot_exec::paper_futures::PaperFuturesBroker;
 use bot_exec::{PaperBroker, PaperBrokerConfig};
 use bot_ipc::{
-    CommandDispatcher, ConfirmNonceStore, PeerAuthPolicy, TelemetryHub, UdsServerConfig, serve_uds,
+    CommandDispatcher, ConfirmNonceStore, HttpServerConfig, OriginPolicy, PeerAuthPolicy,
+    RateLimiter, TelemetryHub, TokenAuth, UdsServerConfig, serve_http, serve_uds,
 };
 use bot_store::SqliteStore;
 use bot_types::{TradingMode, Venue};
 use ipc_backend::{EngineIpcBackend, spawn_telemetry_bridge};
 use rust_decimal::Decimal;
 use time::OffsetDateTime;
+use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
+
+const SPOT_PROD_WS_URL: &str = "wss://ws-api.binance.com:443/ws-api/v3";
+const SPOT_TESTNET_WS_URL: &str = "wss://ws-api.testnet.binance.vision:443/ws-api/v3";
+const FUTURES_PROD_WS_URL: &str = "wss://ws-fapi.binance.com/ws-fapi/v1";
+const FUTURES_TESTNET_WS_URL: &str = "wss://testnet.binancefuture.com/ws-fapi/v1";
 
 fn unix_now_ms() -> i64 {
     let nanos = OffsetDateTime::now_utc().unix_timestamp_nanos();
@@ -53,6 +67,19 @@ fn resolve_conf_d_dir(config_path: &Path) -> Option<PathBuf> {
     candidate.is_dir().then_some(candidate)
 }
 
+/// Resolve static `web-ui` bundle directory (installed path first, then local build).
+fn resolve_static_web_dir() -> Option<PathBuf> {
+    for candidate in [
+        Path::new("/usr/share/binance-bot/web"),
+        Path::new("web-ui/build"),
+    ] {
+        if candidate.is_dir() && candidate.join("index.html").is_file() {
+            return Some(candidate.to_path_buf());
+        }
+    }
+    None
+}
+
 /// Hard Rule #2: never allow `mode=live` without an existing `live_confirmation_file`
 /// for every enabled venue.
 fn enforce_live_confirmation_guard(cfg: &BotConfig) -> Result<()> {
@@ -76,16 +103,240 @@ fn enforce_live_confirmation_guard(cfg: &BotConfig) -> Result<()> {
     Ok(())
 }
 
-/// Refuse to silently fall back to `PaperBroker` when `mode` is `testnet` or `live`
-/// before `VenueManager` (M16) wires real exchange adapters into `botd`.
-fn enforce_supported_runtime_mode(cfg: &BotConfig) -> Result<()> {
-    if cfg.general.mode != TradingMode::Paper {
-        bail!(
-            "refusing to start binance-botd in {:?} mode: real exchange adapters are wired in M16 (VenueManager); only mode=paper is supported currently",
-            cfg.general.mode
-        );
+fn load_venue_credentials(
+    api_key_file: &str,
+    private_key_path: &str,
+) -> Result<Ed25519Credentials> {
+    let api_key = std::fs::read_to_string(api_key_file)
+        .with_context(|| format!("failed to read API key file '{api_key_file}'"))?
+        .trim()
+        .to_owned();
+    Ed25519Credentials::from_pkcs8_pem_file(api_key, Path::new(private_key_path))
+        .with_context(|| format!("failed to load Ed25519 private key '{private_key_path}'"))
+}
+
+struct BuiltAdapters {
+    primary: Arc<dyn VenueAdapter>,
+    secondary: Option<Arc<dyn VenueAdapter>>,
+    event_rx: mpsc::Receiver<GatewayEvent>,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn build_adapters(cfg: &BotConfig, initial_equity: Decimal) -> Result<BuiltAdapters> {
+    let (merged_tx, merged_rx) = mpsc::channel(USER_EVENT_CHANNEL_CAPACITY);
+
+    match cfg.general.mode {
+        TradingMode::Paper => {
+            let spot = Arc::new(PaperBroker::new(PaperBrokerConfig {
+                initial_quote_balance: initial_equity,
+                ..PaperBrokerConfig::default()
+            }));
+            spot.activate()
+                .await
+                .context("failed to activate paper spot broker")?;
+            if let Some(mut rx) = spot.take_event_rx() {
+                let tx = merged_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(ev) = rx.recv().await {
+                        if tx.send(ev).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            let futures: Option<Arc<dyn VenueAdapter>> = if cfg.venues.futures.enabled {
+                let fut_eq = if cfg.venues.futures.capital_allocation_usd > Decimal::ZERO {
+                    cfg.venues.futures.capital_allocation_usd
+                } else {
+                    initial_equity
+                };
+                Some(Arc::new(PaperFuturesBroker::new(
+                    fut_eq,
+                    cfg.venues.futures.max_leverage,
+                    Decimal::new(5, 3), // 0.5% maintenance margin rate
+                )))
+            } else {
+                None
+            };
+
+            let (primary, secondary) = if cfg.venues.default_active == Venue::UsdsFutures
+                && let Some(fut) = futures
+            {
+                fut.activate()
+                    .await
+                    .context("failed to activate paper futures broker")?;
+                (fut, Some(spot as Arc<dyn VenueAdapter>))
+            } else {
+                (spot as Arc<dyn VenueAdapter>, futures)
+            };
+
+            Ok(BuiltAdapters {
+                primary,
+                secondary,
+                event_rx: merged_rx,
+            })
+        }
+        TradingMode::Testnet | TradingMode::Live => {
+            let is_live = cfg.general.mode == TradingMode::Live;
+            let timeout = Duration::from_secs(10);
+
+            let spot_adapter: Option<Arc<SpotAdapter>> = if cfg.venues.spot.enabled {
+                let creds = load_venue_credentials(
+                    &cfg.venues.spot.api_key_file,
+                    &cfg.venues.spot.private_key_path,
+                )?;
+                let adp = SpotAdapter::new(
+                    SpotAdapterConfig {
+                        rest_url: if is_live {
+                            SpotRestClient::PRODUCTION_URL.to_owned()
+                        } else {
+                            SpotRestClient::TESTNET_URL.to_owned()
+                        },
+                        rest_timeout: timeout,
+                        session: SpotSessionConfig {
+                            ws_url: if is_live {
+                                SPOT_PROD_WS_URL.to_owned()
+                            } else {
+                                SPOT_TESTNET_WS_URL.to_owned()
+                            },
+                            recv_window_ms: Some(cfg.binance.recv_window_ms),
+                            ..SpotSessionConfig::default()
+                        },
+                    },
+                    creds,
+                )
+                .context("failed to initialize SpotAdapter")?;
+                Some(Arc::new(adp))
+            } else {
+                None
+            };
+
+            let futures_adapter: Option<Arc<FuturesAdapter>> = if cfg.venues.futures.enabled {
+                let creds = Arc::new(load_venue_credentials(
+                    &cfg.venues.futures.api_key_file,
+                    &cfg.venues.futures.private_key_path,
+                )?);
+                let adp = FuturesAdapter::with_transport(
+                    FuturesAdapterConfig {
+                        rest_base_url: if is_live {
+                            FuturesRestClient::PRODUCTION_URL.to_owned()
+                        } else {
+                            FuturesRestClient::TESTNET_URL.to_owned()
+                        },
+                        ws_api_url: if is_live {
+                            FUTURES_PROD_WS_URL.to_owned()
+                        } else {
+                            FUTURES_TESTNET_WS_URL.to_owned()
+                        },
+                        max_leverage_cap: cfg.venues.futures.max_leverage,
+                    },
+                    creds,
+                    timeout,
+                )
+                .context("failed to initialize FuturesAdapter")?;
+                Some(Arc::new(adp))
+            } else {
+                None
+            };
+
+            let (primary, secondary): (Arc<dyn VenueAdapter>, Option<Arc<dyn VenueAdapter>>) =
+                match cfg.venues.default_active {
+                    Venue::Spot => {
+                        let p = spot_adapter.clone().context(
+                            "venues.default_active=spot requires venues.spot.enabled=true",
+                        )?;
+                        p.activate()
+                            .await
+                            .context("failed to activate SpotAdapter")?;
+                        if let Some(mut rx) = p.take_event_rx() {
+                            let tx = merged_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(ev) = rx.recv().await {
+                                    if tx.send(ev).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                        }
+                        (
+                            p as Arc<dyn VenueAdapter>,
+                            futures_adapter.map(|f| f as Arc<dyn VenueAdapter>),
+                        )
+                    }
+                    Venue::UsdsFutures => {
+                        let p = futures_adapter.clone().context(
+                            "venues.default_active=futures requires venues.futures.enabled=true",
+                        )?;
+                        p.activate()
+                            .await
+                            .context("failed to activate FuturesAdapter")?;
+                        (
+                            p as Arc<dyn VenueAdapter>,
+                            spot_adapter.map(|s| s as Arc<dyn VenueAdapter>),
+                        )
+                    }
+                };
+
+            Ok(BuiltAdapters {
+                primary,
+                secondary,
+                event_rx: merged_rx,
+            })
+        }
     }
-    Ok(())
+}
+
+async fn maybe_start_http_server(
+    cfg: &BotConfig,
+    dispatcher: Arc<CommandDispatcher<EngineIpcBackend>>,
+    hub: Arc<TelemetryHub>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let bind_raw = cfg.ipc.web_bind.trim();
+    if bind_raw.is_empty() {
+        return None;
+    }
+    let Ok(addr) = bind_raw.parse::<SocketAddr>() else {
+        warn!(web_bind = %bind_raw, "invalid ipc.web_bind address; HTTP/WS server disabled");
+        return None;
+    };
+    let token_path = Path::new(&cfg.ipc.web_token_file);
+    if !token_path.is_file() {
+        warn!(
+            web_token_file = %cfg.ipc.web_token_file,
+            "ipc.web_token_file not found; HTTP/WS server disabled"
+        );
+        return None;
+    }
+    let ro_path = (!cfg.ipc.web_readonly_token_file.trim().is_empty())
+        .then(|| Path::new(&cfg.ipc.web_readonly_token_file));
+    let auth = match TokenAuth::from_files(token_path, ro_path) {
+        Ok(a) => a,
+        Err(err) => {
+            warn!(error = %err, "failed to load HTTP bearer tokens; HTTP/WS server disabled");
+            return None;
+        }
+    };
+    let http_cfg = HttpServerConfig {
+        auth,
+        origin_policy: OriginPolicy::loopback_default(addr.port()),
+        rate_limiter: Arc::new(RateLimiter::new(60, 20)),
+    };
+    let static_dir = resolve_static_web_dir();
+    match serve_http(addr, dispatcher, hub, http_cfg, static_dir.clone()).await {
+        Ok(handle) => {
+            info!(
+                web_bind = %addr,
+                static_dir = ?static_dir,
+                "HTTP/WS IPC server started"
+            );
+            Some(handle)
+        }
+        Err(err) => {
+            warn!(error = %err, web_bind = %addr, "failed to bind HTTP/WS IPC server");
+            None
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -97,7 +348,6 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     })
     .with_context(|| format!("failed to load config from {}", config_path.display()))?;
     enforce_live_confirmation_guard(&cfg)?;
-    enforce_supported_runtime_mode(&cfg)?;
 
     let db_path = Path::new(&cfg.storage.db_path);
     if let Some(parent) = db_path.parent()
@@ -111,6 +361,8 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     store
         .integrity_check()
         .context("sqlite integrity check failed")?;
+    let audit_store = SqliteStore::open(db_path)
+        .with_context(|| format!("failed to open sqlite audit store at {}", db_path.display()))?;
 
     let initial_equity = if cfg.venues.spot.capital_allocation_usd > Decimal::ZERO {
         cfg.venues.spot.capital_allocation_usd
@@ -118,35 +370,33 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         Decimal::from(10_000_u32)
     };
 
-    let broker = Arc::new(PaperBroker::new(PaperBrokerConfig {
-        initial_quote_balance: initial_equity,
-        ..PaperBrokerConfig::default()
-    }));
-    broker
-        .activate()
-        .await
-        .context("failed to activate paper broker")?;
-    let event_rx = broker
-        .take_event_rx()
-        .context("failed to take paper broker event channel")?;
+    let adapters = build_adapters(&cfg, initial_equity).await?;
+    let active_venue = adapters.primary.venue();
 
     let now_ms = unix_now_ms();
-    let actor = EngineActor::bootstrap(
+    let mut actor = EngineActor::bootstrap(
         cfg.clone(),
         "b01".to_owned(),
         store,
-        broker,
+        adapters.primary,
         initial_equity,
         now_ms,
     )
     .await
     .context("failed to bootstrap EngineActor")?;
-    let (engine_handle, engine_join) = actor.spawn(event_rx);
+    if let Some(sec) = adapters.secondary {
+        let sec_enabled = match sec.venue() {
+            Venue::Spot => cfg.venues.spot.enabled,
+            Venue::UsdsFutures => cfg.venues.futures.enabled,
+        };
+        actor.register_secondary_adapter(sec, sec_enabled, true);
+    }
+    let (engine_handle, engine_join) = actor.spawn(adapters.event_rx);
 
     let backend = Arc::new(EngineIpcBackend::new(cfg.clone(), engine_handle.clone()));
     let dispatcher = Arc::new(CommandDispatcher::new(
         backend,
-        None,
+        Some(Arc::new(Mutex::new(audit_store))),
         ConfirmNonceStore::default(),
     ));
     let hub = Arc::new(TelemetryHub::new(256));
@@ -172,9 +422,12 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         }
     });
 
+    let http_handle =
+        maybe_start_http_server(&cfg, Arc::clone(&dispatcher), Arc::clone(&hub)).await;
+
     info!(
         mode = ?cfg.general.mode,
-        venue = %Venue::Spot,
+        venue = %active_venue,
         uds_path = %uds_path.display(),
         version = env!("CARGO_PKG_VERSION"),
         "binance-botd started"
@@ -208,6 +461,9 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     let _ = engine_join.await;
     telemetry_bridge.abort();
     uds_handle.abort();
+    if let Some(http) = http_handle {
+        http.abort();
+    }
 
     info!(
         canceled_entry_orders = canceled_entries,
@@ -271,14 +527,14 @@ mod tests {
     }
 
     #[test]
-    fn enforce_supported_runtime_mode_rejects_testnet_and_live() {
+    fn live_confirmation_guard_blocks_live_without_file_and_allows_paper_or_testnet() {
         let mut cfg = BotConfig::default();
-        assert!(enforce_supported_runtime_mode(&cfg).is_ok());
+        assert!(enforce_live_confirmation_guard(&cfg).is_ok());
 
         cfg.general.mode = TradingMode::Testnet;
-        assert!(enforce_supported_runtime_mode(&cfg).is_err());
+        assert!(enforce_live_confirmation_guard(&cfg).is_ok());
 
         cfg.general.mode = TradingMode::Live;
-        assert!(enforce_supported_runtime_mode(&cfg).is_err());
+        assert!(enforce_live_confirmation_guard(&cfg).is_err());
     }
 }

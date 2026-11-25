@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-//! Thin CLI binary for M14 Spot gates:
-//! - `bot-backtest g1 --input <csv> --symbol <SYMBOL> --out <md>`
-//! - `bot-backtest gate-report --db <sqlite> --venue <spot|futures> --gate <G2|G3|G4> --out <md>`
+//! Thin CLI binary for M14/M17 Spot & Futures gates:
+//! - `bot-backtest g1 --input <csv> --symbol <SYMBOL> [--venue spot|futures] --out <md>`
+//! - `bot-backtest gate-report --db <sqlite> [--scope <spot|futures-long|futures-short> | --venue <spot|futures>] --gate <G2|G3|G4> --out <md>`
 
 use std::env;
 use std::fs;
@@ -13,16 +13,19 @@ use bot_backtest::gate_report::{
     render_g1_markdown, render_operational_gate_markdown,
 };
 use bot_backtest::{
-    BacktestMetrics, ParameterSensitivityReport, RDistribution, WalkForwardSummary,
-    parse_binance_kline_csv,
+    BacktestConfig, BacktestRunner, CostModelConfig, ParameterSensitivityReport, WalkForwardConfig,
+    WalkForwardRunner, evaluate_parameter_sensitivity, parse_binance_kline_csv,
 };
+use bot_config::BotConfig;
+use bot_marketdata::Timeframe;
 use bot_store::SqliteStore;
-use bot_types::Venue;
+use bot_strategy::{CommissionRates, S1TrendPullback};
+use bot_types::{InstrumentRules, Symbol, Venue};
 use rust_decimal::Decimal;
 
 fn usage() -> &'static str {
     "Usage:\n  \
-     bot-backtest g1 --input <kline_csv> --symbol <SYMBOL> --out <markdown_path>\n  \
+     bot-backtest g1 --input <kline_csv> --symbol <SYMBOL> [--venue <spot|futures>] --out <markdown_path>\n  \
      bot-backtest gate-report --db <sqlite_path> [--scope <spot|futures-long|futures-short> | --venue <spot|futures>] --gate <G2|G3|G4> --out <markdown_path>"
 }
 
@@ -42,13 +45,21 @@ fn parse_venue(raw: &str) -> Option<Venue> {
 
 fn run_g1(args: &[String]) -> Result<(), String> {
     let input = find_flag(args, "--input").ok_or_else(|| "missing --input".to_owned())?;
-    let _symbol_raw = find_flag(args, "--symbol").ok_or_else(|| "missing --symbol".to_owned())?;
+    let symbol_raw = find_flag(args, "--symbol").ok_or_else(|| "missing --symbol".to_owned())?;
     let out_path = find_flag(args, "--out").ok_or_else(|| "missing --out".to_owned())?;
+    let venue = match find_flag(args, "--venue") {
+        Some(raw) => parse_venue(&raw)
+            .ok_or_else(|| format!("invalid --venue `{raw}` (expected spot|futures)"))?,
+        None => Venue::Spot,
+    };
 
     let csv_body = fs::read_to_string(&input)
         .map_err(|e| format!("failed to read input CSV `{input}`: {e}"))?;
     let klines = parse_binance_kline_csv(&csv_body)
         .map_err(|e| format!("failed to parse Binance kline CSV: {e}"))?;
+    if klines.is_empty() {
+        return Err("input kline CSV contains 0 bars".to_owned());
+    }
 
     let span_days = match (klines.first(), klines.last()) {
         (Some(first), Some(last)) if last.close_time_ms > first.open_time_ms => {
@@ -57,39 +68,83 @@ fn run_g1(args: &[String]) -> Result<(), String> {
         _ => 0,
     };
 
-    // Baseline empty metrics when dataset is too short for full walk-forward windows;
-    // real >= 3-year datasets are evaluated via WalkForwardRunner in production runs.
-    let summary = WalkForwardSummary {
-        windows: Vec::new(),
-        total_parameter_trials: 0,
-        median_test_profit_factor: Decimal::ZERO,
-        median_test_expectancy_r: Decimal::ZERO,
-        worst_test_max_drawdown_pct: Decimal::ZERO,
-    };
-    let metrics = BacktestMetrics {
-        total_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        net_pnl_usd: Decimal::ZERO,
-        profit_factor: Decimal::ZERO,
-        profit_factor_without_top3: Decimal::ZERO,
-        expectancy_r: Decimal::ZERO,
-        max_drawdown_pct: Decimal::ZERO,
-        sharpe_ratio: Decimal::ZERO,
-        sortino_ratio: Decimal::ZERO,
-        deflated_sharpe: Decimal::ZERO,
-        turnover_multiple: Decimal::ZERO,
-        exposure_pct: Decimal::ZERO,
-        r_distribution: RDistribution::default(),
-    };
-    let sensitivity = ParameterSensitivityReport {
-        total_neighbors: 0,
-        passing_neighbors: 0,
-        passing_ratio_pct: Decimal::ZERO,
+    let base_cfg = BacktestConfig {
+        venue,
+        symbol: Symbol(symbol_raw),
+        timeframe: Timeframe::H1,
+        initial_equity_usd: Decimal::from(10_000_u32),
+        rules: InstrumentRules {
+            venue,
+            symbol: Symbol(find_flag(args, "--symbol").unwrap_or_else(|| "BTCUSDT".to_owned())),
+            tick_size: Decimal::new(1, 2),
+            step_size: Decimal::new(1, 5),
+            min_qty: Decimal::new(1, 5),
+            max_qty: Decimal::from(10_000_u32),
+            min_notional: Decimal::from(10_u32),
+            status_trading: true,
+            base_precision: 5,
+            quote_precision: 2,
+        },
+        cost_model: CostModelConfig {
+            commission: CommissionRates {
+                maker_bps: Decimal::from(10_u32),
+                taker_bps: Decimal::from(10_u32),
+            },
+            tick_size: Decimal::new(1, 2),
+            spread_bps: Decimal::from(2_u32),
+            stress_multiplier: Decimal::from(2_u32), // §13.3 2x slippage stress
+        },
+        bot_config: BotConfig::default(),
+        seed: 42,
     };
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to create tokio runtime: {e}"))?;
+
+    let (summary, metrics, sensitivity) = rt.block_on(async {
+        let wf_cfg = WalkForwardConfig::default_12m_3m_3m(Timeframe::H1);
+        let candidates = [
+            Decimal::new(24, 1), // -20%
+            Decimal::new(30, 1), // baseline 3.0R
+            Decimal::new(36, 1), // +20%
+        ];
+        let wf_summary = WalkForwardRunner::run_s1(&base_cfg, &wf_cfg, &candidates, &klines)
+            .await
+            .map_err(|e| format!("walk-forward run failed: {e}"))?;
+
+        let mut neighbor_pfs = Vec::with_capacity(candidates.len());
+        let mut baseline_metrics = None;
+        for &tp2_r in &candidates {
+            let mut cfg = base_cfg.clone();
+            cfg.bot_config.strategy.trend_pullback.tp2_r = tp2_r;
+            let mut strat = S1TrendPullback::new(
+                cfg.bot_config.strategy.trend_pullback.clone(),
+                Decimal::from(5_u32),
+            );
+            let trace = BacktestRunner::run_with_trace_and_trials(
+                &cfg,
+                &mut strat,
+                &klines,
+                candidates.len(),
+            )
+            .await
+            .map_err(|e| format!("replay run failed: {e}"))?;
+            neighbor_pfs.push(trace.report.metrics.profit_factor);
+            if tp2_r == Decimal::new(30, 1) {
+                baseline_metrics = Some(trace.report.metrics);
+            }
+        }
+        let metrics =
+            baseline_metrics.ok_or_else(|| "baseline S1 replay metrics missing".to_owned())?;
+        let sensitivity: ParameterSensitivityReport =
+            evaluate_parameter_sensitivity(&neighbor_pfs, Decimal::new(11, 1));
+        Ok::<_, String>((wf_summary, metrics, sensitivity))
+    })?;
+
     let verdict = evaluate_g1_gate(&metrics, &sensitivity, span_days);
-    let md = render_g1_markdown(Venue::Spot, &summary, &verdict, &input);
+    let md = render_g1_markdown(venue, &summary, &verdict, &input);
     write_markdown(&out_path, &md)
 }
 

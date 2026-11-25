@@ -119,10 +119,41 @@ impl UdsClient {
                 confirm_nonce: nonce,
             },
             ConfirmAction::SwitchVenue => {
-                bail!("switch_venue is not supported until M16");
+                bail!("use UdsClient::send_switch_venue for switch_venue commands");
             }
         };
         self.send_command(cmd).await
+    }
+
+    /// Execute `switch_venue`, automatically requesting a confirmation nonce when `policy == Flatten`.
+    ///
+    /// # Errors
+    /// Returns an error on IPC/nonce failure.
+    pub async fn send_switch_venue(
+        &mut self,
+        target: bot_types::Venue,
+        on_open_positions: bot_ipc::protocol::OnOpenPositionsArg,
+    ) -> Result<CommandResultPayload> {
+        let confirm_nonce = if on_open_positions == bot_ipc::protocol::OnOpenPositionsArg::Flatten {
+            let req = self
+                .send_command(CommandKind::RequestConfirm {
+                    action: ConfirmAction::SwitchVenue,
+                })
+                .await?;
+            if !req.ok {
+                bail!("request_confirm failed ({}): {}", req.code, req.message);
+            }
+            req.confirm_nonce
+                .context("server did not return a confirm_nonce for switch_venue")?
+        } else {
+            String::new()
+        };
+        self.send_command(CommandKind::SwitchVenue {
+            target,
+            on_open_positions,
+            confirm_nonce,
+        })
+        .await
     }
 }
 

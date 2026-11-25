@@ -355,6 +355,7 @@ struct SwitchVenueBody {
     cmd_id: Uuid,
     target: Venue,
     on_open_positions: OnOpenPositionsArg,
+    #[serde(default)]
     confirm_nonce: String,
 }
 
@@ -788,4 +789,69 @@ async fn send_ws_envelope(
         .send(AxumWsMessage::Text(text.into()))
         .await
         .map_err(|_| ())
+}
+
+/// Bind `addr` (loopback HTTP/WS IPC + optional static `web-ui` SPA directory) and spawn `axum::serve`.
+///
+/// # Errors
+/// Returns [`IpcError::Io`] if binding `addr` fails.
+pub async fn serve_http<B: IpcBackend>(
+    addr: std::net::SocketAddr,
+    dispatcher: Arc<CommandDispatcher<B>>,
+    hub: Arc<TelemetryHub>,
+    config: HttpServerConfig,
+    static_dir: Option<std::path::PathBuf>,
+) -> Result<tokio::task::JoinHandle<()>, IpcError> {
+    let mut router = build_router(dispatcher, hub, config);
+    if let Some(dir) = static_dir.filter(|p| p.is_dir()) {
+        let dir_arc = Arc::new(dir);
+        router = router.fallback(move |uri: Uri| {
+            let root = Arc::clone(&dir_arc);
+            async move { serve_static_asset(&root, uri.path()) }
+        });
+    }
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let handle = tokio::spawn(async move {
+        if let Err(err) = axum::serve(listener, router).await {
+            tracing::warn!(error = %err, "HTTP/WS IPC server exited with error");
+        }
+    });
+    Ok(handle)
+}
+
+fn serve_static_asset(root: &std::path::Path, req_path: &str) -> Response {
+    let trimmed = req_path.trim_start_matches('/');
+    // Reject path traversal segments explicitly.
+    if trimmed.split('/').any(|seg| seg == ".." || seg == "\\") {
+        return with_security_headers((StatusCode::BAD_REQUEST, "invalid path").into_response());
+    }
+    let candidate = if trimmed.is_empty() {
+        root.join("index.html")
+    } else {
+        let p = root.join(trimmed);
+        if p.is_file() {
+            p
+        } else {
+            // SPA client-side route fallback to index.html.
+            root.join("index.html")
+        }
+    };
+    let Ok(bytes) = std::fs::read(&candidate) else {
+        return with_security_headers((StatusCode::NOT_FOUND, "not found").into_response());
+    };
+    let content_type = match candidate.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    };
+    let mut resp = (StatusCode::OK, bytes).into_response();
+    resp.headers_mut()
+        .insert("content-type", HeaderValue::from_static(content_type));
+    with_security_headers(resp)
 }

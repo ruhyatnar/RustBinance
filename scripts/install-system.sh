@@ -50,6 +50,7 @@ if [ -x "$ROOT/desktop-ui/build/binance-bot-ui" ]; then
   install -m 0755 "$ROOT/desktop-ui/build/binance-bot-ui" "$BIN_DIR/"
 fi
 if [ -d "$ROOT/web-ui/build" ]; then
+  rm -rf "${WEB_DIR:?}/"*
   cp -r "$ROOT/web-ui/build/." "$WEB_DIR/"
 fi
 

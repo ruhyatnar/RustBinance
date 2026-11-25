@@ -61,4 +61,28 @@ describe('IpcHttpClient', () => {
 			code: 'loosen_rejected'
 		});
 	});
+
+	it('dispatches switchVenue to /api/v1/commands/switch-venue with policy and optional nonce', async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response(
+				JSON.stringify({
+					cmd_id: '0192f0a8-1234-7000-8000-000000000002',
+					ok: true,
+					code: 'ok',
+					message: 'switched Spot -> UsdsFutures'
+				}),
+				{ status: 200, headers: { 'content-type': 'application/json' } }
+			)
+		);
+		const client = new IpcHttpClient('http://127.0.0.1:3001', 'full-token', fetchMock);
+		const res = await client.switchVenue('futures', 'drain');
+		expect(res.ok).toBe(true);
+		const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:3001/api/v1/commands/switch-venue');
+		expect(JSON.parse(String(init.body))).toMatchObject({
+			target: 'futures',
+			on_open_positions: 'drain',
+			confirm_nonce: ''
+		});
+	});
 });

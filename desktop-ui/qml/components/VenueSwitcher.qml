@@ -6,7 +6,7 @@ RowLayout {
     id: root
     spacing: 8
 
-    property string activeVenue: "Spot"
+    property string activeVenue: "spot"
     property string spotState: "Active"
     property string futuresState: "Disabled"
     property bool readOnly: false
@@ -17,13 +17,13 @@ RowLayout {
 
     Button {
         text: "SPOT (" + root.spotState + ")"
-        highlighted: root.activeVenue === "Spot"
-        onClicked: root.requestSwitch("Spot")
+        highlighted: root.activeVenue === "spot"
+        onClicked: root.requestSwitch("spot")
     }
 
     Button {
         text: "FUTURES (" + root.futuresState + ") · ISOLATED maks 3x"
-        highlighted: root.activeVenue === "UsdsFutures"
-        onClicked: root.requestSwitch("UsdsFutures")
+        highlighted: root.activeVenue === "futures"
+        onClicked: root.requestSwitch("futures")
     }
 }

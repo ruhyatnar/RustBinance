@@ -8,8 +8,8 @@ Dialog {
     modal: true
     standardButtons: Dialog.Cancel
 
-    property string currentVenue: "Spot"
-    property string targetVenue: "UsdsFutures"
+    property string currentVenue: "spot"
+    property string targetVenue: "futures"
     property string engineMode: "Ready"
     property int openPositionsCount: 0
     property string selectedPolicy: "drain"

@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bot_config::BotConfig;
-use bot_engine::{EngineHandle, TelemetrySnapshot};
+use bot_engine::{EngineFullSnapshot, EngineHandle, TelemetrySnapshot};
 use bot_ipc::protocol::{
-    DeltaPayload, EngineSummary, RateStatus, RiskLimitsSummary, RiskSummary, ServerMessage,
-    SnapshotPayload, VenuesSummary,
+    DeltaPayload, EngineSummary, OrderView, PositionView, RateStatus, RiskLimitsSummary,
+    RiskSummary, ServerMessage, SnapshotPayload, VenuesSummary,
 };
 use bot_ipc::{IpcBackend, IpcError, TelemetryHub};
 use bot_risk::ModeTrigger;
@@ -41,7 +41,100 @@ impl EngineIpcBackend {
         }
     }
 
-    fn build_snapshot(&self, snap: &TelemetrySnapshot) -> SnapshotPayload {
+    fn map_full_snapshot(&self, full: &EngineFullSnapshot, now_ms: i64) -> SnapshotPayload {
+        let uptime_s =
+            u64::try_from(now_ms.saturating_sub(full.started_at_ms).max(0) / 1000).unwrap_or(0);
+        let positions = full
+            .positions
+            .iter()
+            .map(|p| {
+                let opened_ms =
+                    i64::try_from(p.opened_at.unix_timestamp_nanos() / 1_000_000).unwrap_or(now_ms);
+                let age_s =
+                    u64::try_from(now_ms.saturating_sub(opened_ms).max(0) / 1000).unwrap_or(0);
+                PositionView {
+                    id: p.id,
+                    venue: p.venue,
+                    symbol: p.symbol.as_str().to_owned(),
+                    strategy: format!("{:?}", p.strategy),
+                    state: format!("{:?}", p.state),
+                    entry: p.entry_price.as_decimal(),
+                    mark: p.best_price.as_decimal(),
+                    qty: p.qty_open.as_decimal(),
+                    stop: p.stop_price.as_decimal(),
+                    tp1: p.tp1_price.as_decimal(),
+                    tp2: p
+                        .tp2_price
+                        .map_or_else(|| p.tp1_price.as_decimal(), bot_types::Price::as_decimal),
+                    profit_r: Decimal::ZERO,
+                    unrealized_quote: p.realized_pnl_quote,
+                    age_s,
+                    tp1_done: p.tp1_done,
+                    be_done: p.breakeven_done,
+                }
+            })
+            .collect();
+
+        let orders = full
+            .orders
+            .iter()
+            .map(|o| OrderView {
+                client_id: o.client_id.clone(),
+                venue: o.venue,
+                symbol: o.symbol.as_str().to_owned(),
+                side: format!("{:?}", o.side),
+                kind: format!("{:?}", o.kind),
+                purpose: format!("{:?}", o.purpose),
+                status: format!("{:?}", o.status),
+                price: o.price.map(bot_types::Price::as_decimal),
+                qty: o.qty.as_decimal(),
+                filled_qty: o.filled_qty.as_decimal(),
+            })
+            .collect();
+
+        SnapshotPayload {
+            venues: VenuesSummary {
+                active: full.telemetry.venue,
+                spot: full.telemetry.spot_state,
+                futures: full.telemetry.futures_state,
+                last_switch_ms: u64::try_from(full.last_switch_ms).unwrap_or(0),
+                switches_today: full.switches_today,
+            },
+            engine: EngineSummary {
+                mode: full.telemetry.mode,
+                build_mode: self.config.general.mode,
+                uptime_s,
+                ws_latency_ms: u64::from(full.health.ws_latency_ms),
+                clock_drift_ms: full.health.clock_drift_ms,
+                rate: RateStatus {
+                    weight_used: 0,
+                    weight_limit: 6000,
+                    orders_10s: 0,
+                },
+            },
+            risk: RiskSummary {
+                equity: full.telemetry.equity_total_usd,
+                day_pnl_pct: full.day_pnl_pct,
+                week_pnl_pct: full.week_pnl_pct,
+                drawdown_pct: full.drawdown_pct,
+                heat_pct: full.heat_pct,
+                heat_max_pct: full.config.risk.portfolio_heat_max_pct,
+                open_positions: u32::try_from(full.telemetry.open_positions).unwrap_or(u32::MAX),
+                max_positions: full.config.risk.max_open_positions,
+                btc_guard: full.btc_guard.clone(),
+                limits: RiskLimitsSummary {
+                    daily_halt_pct: full.config.risk.daily_loss_halt_pct,
+                    kill_pct: full.config.risk.drawdown_kill_pct,
+                },
+            },
+            positions,
+            orders,
+            signals_shadow: Vec::new(),
+            alerts: Vec::new(),
+        }
+    }
+
+    fn fallback_snapshot(&self, snap: &TelemetrySnapshot) -> SnapshotPayload {
         SnapshotPayload {
             venues: VenuesSummary {
                 active: snap.venue,
@@ -96,8 +189,11 @@ impl IpcBackend for EngineIpcBackend {
     }
 
     async fn snapshot(&self) -> SnapshotPayload {
-        let snap = self.handle.telemetry();
-        self.build_snapshot(&snap)
+        let now_ms = unix_now_ms();
+        match self.handle.full_snapshot(now_ms).await {
+            Ok(full) => self.map_full_snapshot(&full, now_ms),
+            Err(_) => self.fallback_snapshot(&self.handle.telemetry()),
+        }
     }
 
     async fn engine_mode(&self) -> EngineMode {
@@ -139,31 +235,45 @@ impl IpcBackend for EngineIpcBackend {
         Ok(format!("engine mode -> {next:?}"))
     }
 
-    async fn set_param(&self, key: &str, _value: &str) -> Result<String, IpcError> {
-        Err(IpcError::BadRequest(format!(
-            "runtime parameter mutation '{key}' is not yet wired to EngineActor"
-        )))
+    async fn set_param(&self, key: &str, value: &str) -> Result<String, IpcError> {
+        self.handle
+            .set_param(key.to_owned(), value.to_owned())
+            .await
+            .map_err(|err| IpcError::BadRequest(err.to_string()))?
+            .map_err(|err| {
+                if err.to_ascii_lowercase().contains("loosen") {
+                    IpcError::LoosenRejected(err)
+                } else {
+                    IpcError::BadRequest(err)
+                }
+            })
     }
 
     async fn disable_strategy(&self, id: &str) -> Result<String, IpcError> {
-        Err(IpcError::BadRequest(format!(
-            "runtime strategy disable '{id}' is not yet wired to EngineActor"
-        )))
+        self.handle
+            .disable_strategy(id.to_owned())
+            .await
+            .map_err(|err| IpcError::BadRequest(err.to_string()))?
+            .map_err(IpcError::BadRequest)
     }
 
     async fn close_position(&self, position_id: Uuid) -> Result<String, IpcError> {
-        Err(IpcError::BadRequest(format!(
-            "manual close_position '{position_id}' is not yet wired to EngineActor"
-        )))
+        self.handle
+            .close_position(position_id, unix_now_ms())
+            .await
+            .map_err(|err| IpcError::BadRequest(err.to_string()))?
+            .map_err(IpcError::NotFound)
     }
 
     async fn panic_flatten(&self) -> Result<String, IpcError> {
-        let next = self
+        let (next, flattened) = self
             .handle
-            .apply_mode_trigger(ModeTrigger::ManualPanic, unix_now_ms())
+            .panic_flatten(unix_now_ms())
             .await
             .map_err(|err| IpcError::BadRequest(err.to_string()))?;
-        Ok(format!("panic applied; engine mode -> {next:?}"))
+        Ok(format!(
+            "panic flatten complete ({flattened} positions closed); engine mode -> {next:?}"
+        ))
     }
 
     async fn reset_kill(&self) -> Result<String, IpcError> {
@@ -217,6 +327,13 @@ pub fn spawn_telemetry_bridge(
         while rx.changed().await.is_ok() {
             let snap = rx.borrow_and_update().clone();
             let delta = DeltaPayload {
+                venues: Some(VenuesSummary {
+                    active: snap.venue,
+                    spot: snap.spot_state,
+                    futures: snap.futures_state,
+                    last_switch_ms: 0,
+                    switches_today: 0,
+                }),
                 engine: Some(EngineSummary {
                     mode: snap.mode,
                     build_mode,
@@ -246,7 +363,7 @@ mod tests {
     use bot_store::SqliteStore;
 
     #[tokio::test]
-    async fn engine_ipc_backend_mutates_real_engine_actor_mode() {
+    async fn engine_ipc_backend_mutates_real_engine_actor_and_returns_live_snapshot() {
         let cfg = BotConfig::default();
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
         let broker = Arc::new(PaperBroker::new(PaperBrokerConfig::default()));
@@ -273,26 +390,37 @@ mod tests {
 
         assert_eq!(backend.engine_mode().await, EngineMode::Ready);
 
+        // Tighten-only set_param must succeed for tightening and reject loosening!
+        assert!(
+            backend
+                .set_param("risk.max_open_positions", "2")
+                .await
+                .is_ok()
+        );
+        assert!(
+            backend
+                .set_param("risk.max_open_positions", "9")
+                .await
+                .is_err()
+        );
+        let snap = backend.snapshot().await;
+        assert_eq!(snap.risk.max_positions, 2);
+
+        // disable_strategy wired directly to EngineActor.
+        assert!(backend.disable_strategy("breakout").await.is_ok());
+        assert!(backend.disable_strategy("unknown").await.is_err());
+
         backend.pause().await.expect("pause");
         assert_eq!(handle.telemetry().mode, EngineMode::Paused);
 
         backend.panic_flatten().await.expect("panic");
         assert_eq!(handle.telemetry().mode, EngineMode::Killed);
 
-        // Bridge should have published at least one Delta frame to TelemetryHub.
         let frame = tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
             .await
             .expect("telemetry delta timeout")
             .expect("telemetry delta frame");
         assert!(matches!(frame.body, ServerMessage::Delta(_)));
-
-        // Unwired mutations must fail explicitly rather than silently succeeding.
-        assert!(
-            backend
-                .set_param("risk.max_open_positions", "1")
-                .await
-                .is_err()
-        );
 
         bridge.abort();
         let _ = handle.shutdown(1_700_000_001_000).await;

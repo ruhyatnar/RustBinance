@@ -28,6 +28,10 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-24 (Audit Menyeluruh Pasca-M17 #1–#16 & Installer Terpadu `install.sh`):**
+  - Menutup seluruh 16 temuan audit (Must Fix #1–#9, Should Fix #10–#14, Nice to Have #15–#16) di `bot-engine`, `bot-ipc`, `botd`, `bot-backtest`, `botctl`, `web-ui`, `desktop-ui`, `scripts/verify.sh`, dan `scripts/install-system.sh`.
+  - Menambahkan installer interaktif terpadu `./install.sh` dengan deteksi otomatis distro Linux (`pacman`/`apt`/`dnf`/`zypper`/Container), jaminan Rust ≥ 1.89, dan `14/14` tes packaging lulus.
+  - `./scripts/verify.sh` lulus penuh (`cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `web-ui` `27/27` Vitest + `vite build`, secret scan).
 - **2026-11-24 (M17 — Tooling & Runbook Gerbang Futures + Draft ADR-0006 `dual`):**
   - `crates/bot-backtest`: tambah `GateScope` (`Spot`, `FuturesLong`, `FuturesShort`), `evaluate_sqlite_gate_for_scope` (pemisahan ketat Long vs Short + pengecekan `liquidation_incidents == 0` & `unprotected_algo_incidents == 0`), flag `--scope` di CLI `bot-backtest gate-report`, dan tes integrasi SQLite di `gate_report_suite.rs`.
   - `docs/gates/futures/`: tambah runbook & templat gerbang `long/G1.md`–`G5.md`, `short/G1.md`–`G5.md`, `chaos.md` (§13.4 Futures), dan `venue-switch-testnet.md` (uji peralihan Spot ⇄ Futures di testnet) — seluruhnya bertanda `PENDING OPERATIONAL RUN (NOT APPROVED FOR LIVE)`.

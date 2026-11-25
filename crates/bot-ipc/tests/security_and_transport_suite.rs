@@ -242,6 +242,40 @@ async fn rate_limiter_blocks_excess_requests() {
 }
 
 #[tokio::test]
+async fn http_switch_venue_accepts_omitted_confirm_nonce_for_drain_policy() {
+    let backend = Arc::new(InMemoryIpcBackend::new(BotConfig::default()));
+    let dispatcher = Arc::new(CommandDispatcher::new(
+        backend,
+        None,
+        ConfirmNonceStore::new(Duration::from_secs(10)),
+    ));
+    let hub = Arc::new(TelemetryHub::new(16));
+    let (addr, handle) = spawn_http_server(dispatcher, hub, 10).await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    // Omitting `confirm_nonce` must NOT fail Axum JSON deserialization (422);
+    // it reaches CommandDispatcher cleanly (which returns 501 on InMemoryIpcBackend).
+    let resp = client
+        .post(format!("{base}/api/v1/commands/switch-venue"))
+        .header("Authorization", "Bearer full-secret-token-12345")
+        .json(&serde_json::json!({
+            "target": "futures",
+            "on_open_positions": "drain"
+        }))
+        .send()
+        .await
+        .expect("req");
+    assert_ne!(
+        resp.status(),
+        422,
+        "omitted confirm_nonce must deserialize via #[serde(default)]"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn health_exposes_auth_scope_and_backend_reads_config_build_mode() {
     let mut cfg = BotConfig::default();
     cfg.general.mode = bot_types::TradingMode::Testnet;

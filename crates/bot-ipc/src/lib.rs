@@ -15,7 +15,7 @@ pub use auth::{AuthScope, OriginPolicy, PeerAuthPolicy, RateLimiter, TokenAuth};
 pub use command::{CommandDispatcher, InMemoryIpcBackend, IpcBackend};
 pub use conflate::{TelemetryHub, conflate};
 pub use error::IpcError;
-pub use http::{HttpServerConfig, build_router};
+pub use http::{HttpServerConfig, build_router, serve_http};
 pub use nonce::{ConfirmNonceStore, DEFAULT_CONFIRM_TTL, IssuedNonce};
 pub use protocol::{
     ClientMessage, CommandKind, CommandPayload, CommandResultPayload, ConfirmAction,

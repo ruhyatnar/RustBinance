@@ -26,6 +26,7 @@ public:
     Q_INVOKABLE void disableStrategy(const QString& strategyId);
     Q_INVOKABLE void ackAlert(const QString& alertId);
     Q_INVOKABLE void executeConfirmedAction(const QString& action);
+    Q_INVOKABLE void switchVenue(const QString& targetVenue, const QString& onOpenPositions);
     Q_INVOKABLE void refreshKlines(const QString& venue,
                                    const QString& symbol,
                                    const QString& tf,
@@ -53,7 +54,8 @@ private:
 
     StateStore* m_store = nullptr;
     IpcClient* m_client = nullptr;
-    QHash<QString, QString> m_pendingConfirms; // cmd_id -> action ("panic_flatten" | "reset_kill")
+    QHash<QString, QString> m_pendingConfirms; // cmd_id -> action ("panic_flatten" | "reset_kill" | "switch_venue")
+    QHash<QString, QPair<QString, QString>> m_pendingSwitches; // cmd_id -> (target, on_open_positions)
     QSet<QString> m_trackedMutations;
 };
 

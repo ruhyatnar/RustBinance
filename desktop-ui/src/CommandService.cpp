@@ -18,6 +18,7 @@ CommandService::CommandService(StateStore* store, IpcClient* client, QObject* pa
             if (m_store->connectionState() != QStringLiteral("connected")) {
                 const bool wasBusy = busy();
                 m_pendingConfirms.clear();
+                m_pendingSwitches.clear();
                 m_trackedMutations.clear();
                 if (wasBusy != busy()) {
                     emit busyChanged();
@@ -28,6 +29,7 @@ CommandService::CommandService(StateStore* store, IpcClient* client, QObject* pa
             if (!m_store->canMutate() && !m_pendingConfirms.isEmpty()) {
                 const bool wasBusy = busy();
                 m_pendingConfirms.clear();
+                m_pendingSwitches.clear();
                 if (wasBusy != busy()) {
                     emit busyChanged();
                 }
@@ -179,6 +181,46 @@ void CommandService::executeConfirmedAction(const QString& action) {
     }
 }
 
+void CommandService::switchVenue(const QString& targetVenue, const QString& onOpenPositions) {
+    if (!requireMutationUnlocked()) {
+        return;
+    }
+    const QString target = targetVenue.trimmed().toLower();
+    const QString policy = onOpenPositions.trimmed().toLower();
+    if (target != QStringLiteral("spot") && target != QStringLiteral("futures")) {
+        m_store->setActionFeedback(QStringLiteral("Unsupported target venue: ") + targetVenue);
+        return;
+    }
+    if (policy != QStringLiteral("drain") && policy != QStringLiteral("refuse") &&
+        policy != QStringLiteral("flatten")) {
+        m_store->setActionFeedback(QStringLiteral("Unsupported switch policy: ") + onOpenPositions);
+        return;
+    }
+    if (policy == QStringLiteral("flatten")) {
+        const bool wasBusy = busy();
+        const QString reqCmdId = m_client->sendCommand(QJsonObject{
+            {QStringLiteral("cmd"), QStringLiteral("request_confirm")},
+            {QStringLiteral("action"), QStringLiteral("switch_venue")},
+        });
+        if (reqCmdId.isEmpty()) {
+            m_store->setActionFeedback(QStringLiteral("Failed to request switch_venue confirmation nonce"));
+            return;
+        }
+        m_pendingConfirms.insert(reqCmdId, QStringLiteral("switch_venue"));
+        m_pendingSwitches.insert(reqCmdId, qMakePair(target, policy));
+        if (wasBusy != busy()) {
+            emit busyChanged();
+        }
+        return;
+    }
+    dispatchSimpleMutation(QJsonObject{
+        {QStringLiteral("cmd"), QStringLiteral("switch_venue")},
+        {QStringLiteral("target"), target},
+        {QStringLiteral("on_open_positions"), policy},
+        {QStringLiteral("confirm_nonce"), QString()},
+    });
+}
+
 void CommandService::refreshKlines(const QString& venue,
                                    const QString& symbol,
                                    const QString& tf,
@@ -219,6 +261,7 @@ void CommandService::onCommandResult(const QString& cmdId,
 
     if (m_pendingConfirms.contains(cmdId)) {
         const QString action = m_pendingConfirms.take(cmdId);
+        const auto pendingSwitch = m_pendingSwitches.take(cmdId);
         if (!requireMutationUnlocked()) {
             if (wasBusy != busy()) {
                 emit busyChanged();
@@ -245,10 +288,15 @@ void CommandService::onCommandResult(const QString& cmdId,
             return;
         }
 
-        const QString execId = m_client->sendCommand(QJsonObject{
+        QJsonObject payload{
             {QStringLiteral("cmd"), action},
             {QStringLiteral("confirm_nonce"), confirmNonce},
-        });
+        };
+        if (action == QStringLiteral("switch_venue")) {
+            payload.insert(QStringLiteral("target"), pendingSwitch.first);
+            payload.insert(QStringLiteral("on_open_positions"), pendingSwitch.second);
+        }
+        const QString execId = m_client->sendCommand(payload);
         if (!execId.isEmpty()) {
             m_trackedMutations.insert(execId);
         }

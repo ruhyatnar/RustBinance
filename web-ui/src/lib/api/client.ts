@@ -179,4 +179,21 @@ export class IpcHttpClient {
 			body: JSON.stringify({ cmd_id: cmdId, id })
 		});
 	}
+
+	switchVenue(
+		target: 'spot' | 'futures',
+		onOpenPositions: 'drain' | 'refuse' | 'flatten',
+		confirmNonce = '',
+		cmdId = generateUuid()
+	): Promise<CommandResultPayload> {
+		return this.#request('/api/v1/commands/switch-venue', {
+			method: 'POST',
+			body: JSON.stringify({
+				cmd_id: cmdId,
+				target,
+				on_open_positions: onOpenPositions,
+				confirm_nonce: confirmNonce
+			})
+		});
+	}
 }

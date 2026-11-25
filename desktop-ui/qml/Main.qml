@@ -114,6 +114,31 @@ ApplicationWindow {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                VenueSwitcher {
+                    activeVenue: stateStore ? stateStore.activeVenue : "spot"
+                    spotState: stateStore ? stateStore.spotState : "Active"
+                    futuresState: stateStore ? stateStore.futuresState : "Disabled"
+                    readOnly: !(stateStore && stateStore.canMutate)
+                    onRequestSwitch: function(targetVenue) {
+                        if (stateStore && targetVenue !== stateStore.activeVenue) {
+                            venueSwitchDialog.targetVenue = targetVenue
+                            venueSwitchDialog.open()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    VenueSwitchDialog {
+        id: venueSwitchDialog
+        currentVenue: stateStore ? stateStore.activeVenue : "spot"
+        engineMode: stateStore ? stateStore.engineMode : "Starting"
+        openPositionsCount: stateStore ? stateStore.openPositionsCount : 0
+        onConfirmSwitch: function(targetVenue, policy) {
+            if (commandService) {
+                commandService.switchVenue(targetVenue, policy)
             }
         }
     }

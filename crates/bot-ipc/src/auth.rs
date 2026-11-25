@@ -318,6 +318,70 @@ pub fn peer_supplementary_groups(pid: Option<i32>) -> Vec<u32> {
     parse_proc_status_groups(&status)
 }
 
+/// Resolve supplementary group IDs for a UDS peer `(pid, uid)` without `unsafe`.
+///
+/// Tries `/proc/<pid>/status` first; if unreadable (e.g. under `systemd` `ProtectProc=invisible`),
+/// falls back to reading world-readable `/etc/passwd` + `/etc/group` for `uid`.
+#[must_use]
+pub fn peer_supplementary_groups_for_uid(pid: Option<i32>, uid: u32) -> Vec<u32> {
+    let from_proc = peer_supplementary_groups(pid);
+    if !from_proc.is_empty() {
+        return from_proc;
+    }
+    let Ok(passwd) = std::fs::read_to_string("/etc/passwd") else {
+        return Vec::new();
+    };
+    let Some(username) = parse_etc_passwd_username(&passwd, uid) else {
+        return Vec::new();
+    };
+    let Ok(group) = std::fs::read_to_string("/etc/group") else {
+        return Vec::new();
+    };
+    parse_etc_group_gids(&group, &username)
+}
+
+/// Look up the username for `uid` in `/etc/passwd` contents.
+#[must_use]
+pub fn parse_etc_passwd_username(passwd_contents: &str, uid: u32) -> Option<String> {
+    for line in passwd_contents.lines() {
+        let mut parts = line.split(':');
+        let name = parts.next()?;
+        let _pw = parts.next()?;
+        let uid_str = parts.next()?;
+        if uid_str.parse::<u32>().ok() == Some(uid) {
+            return Some(name.to_owned());
+        }
+    }
+    None
+}
+
+/// Extract all GIDs from `/etc/group` contents whose member list contains `username`.
+#[must_use]
+pub fn parse_etc_group_gids(group_contents: &str, username: &str) -> Vec<u32> {
+    let mut gids = Vec::new();
+    for line in group_contents.lines() {
+        let mut parts = line.split(':');
+        let Some(_gname) = parts.next() else {
+            continue;
+        };
+        let Some(_pw) = parts.next() else {
+            continue;
+        };
+        let Some(gid_str) = parts.next() else {
+            continue;
+        };
+        let Some(members) = parts.next() else {
+            continue;
+        };
+        if let Ok(gid) = gid_str.parse::<u32>()
+            && members.split(',').any(|m| m.trim() == username)
+        {
+            gids.push(gid);
+        }
+    }
+    gids
+}
+
 /// Read current process EUID and EGID on Linux via `/proc/self/status` (zero `unsafe`).
 fn current_process_euid_egid() -> (Option<u32>, Option<u32>) {
     let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
@@ -350,6 +414,16 @@ mod tests {
     fn parse_proc_status_groups_extracts_all_gids() {
         let sample = "Name:\tbotctl\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t10 998 1000 \n";
         assert_eq!(parse_proc_status_groups(sample), vec![10, 998, 1000]);
+    }
+
+    #[test]
+    fn etc_passwd_and_group_fallback_resolves_supplementary_gids() {
+        let passwd =
+            "root:x:0:0:root:/root:/bin/bash\nalice:x:1000:1000:Alice:/home/alice:/bin/bash\n";
+        let group = "wheel:x:10:alice,bob\nbinancebot:x:998:alice\nother:x:1001:bob\n";
+        let uname = parse_etc_passwd_username(passwd, 1000);
+        assert_eq!(uname.as_deref(), Some("alice"));
+        assert_eq!(parse_etc_group_gids(group, "alice"), vec![10, 998]);
     }
 
     #[test]

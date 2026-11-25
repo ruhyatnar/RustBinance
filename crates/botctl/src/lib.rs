@@ -17,6 +17,7 @@ use crate::keygen::generate_ed25519_keypair;
 ///
 /// # Errors
 /// Returns an error if validation, keygen, confirmation check, or IPC execution fails.
+#[allow(clippy::too_many_lines)]
 pub async fn run_cli(cli: Cli) -> Result<String> {
     match cli.command {
         Command::Keygen { out, name } => {
@@ -111,5 +112,39 @@ pub async fn run_cli(cli: Cli) -> Result<String> {
             }
             Ok(res.message)
         }
+        Command::SwitchVenue {
+            target,
+            on_open_positions,
+            confirm,
+            socket,
+        } => run_switch_venue(&target, &on_open_positions, confirm, &socket).await,
     }
+}
+
+async fn run_switch_venue(
+    target: &str,
+    on_open_positions: &str,
+    confirm: bool,
+    socket: &std::path::Path,
+) -> Result<String> {
+    let venue = match target.trim().to_ascii_lowercase().as_str() {
+        "spot" => bot_types::Venue::Spot,
+        "futures" | "usds-futures" | "usdm" => bot_types::Venue::UsdsFutures,
+        other => bail!("invalid --target '{other}' (expected spot|futures)"),
+    };
+    let policy = match on_open_positions.trim().to_ascii_lowercase().as_str() {
+        "drain" | "keep_managing" => bot_ipc::protocol::OnOpenPositionsArg::Drain,
+        "refuse" | "require_flat" => bot_ipc::protocol::OnOpenPositionsArg::Refuse,
+        "flatten" => bot_ipc::protocol::OnOpenPositionsArg::Flatten,
+        other => bail!("invalid --on-open-positions '{other}' (expected drain|refuse|flatten)"),
+    };
+    if policy == bot_ipc::protocol::OnOpenPositionsArg::Flatten && !confirm {
+        bail!("refusing switch-venue with --on-open-positions flatten without --confirm");
+    }
+    let mut client = UdsClient::connect(socket).await?;
+    let res = client.send_switch_venue(venue, policy).await?;
+    if !res.ok {
+        bail!("switch-venue rejected ({}): {}", res.code, res.message);
+    }
+    Ok(res.message)
 }
