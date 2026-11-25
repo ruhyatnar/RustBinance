@@ -2,6 +2,10 @@
 Format: Keep a Changelog. Setiap perubahan perilaku trading wajib tercatat.
 
 ## [Unreleased]
+- **Perbaikan Audit Lanjutan Repo (2026-11-25):**
+  - `bot-exec::entry`: pada error gateway jaringan / non-rejection saat `cancel_replace`, tandai order pengganti sebagai `mark_unknown_needs_query` agar terdeteksi rekonsiliasi; drain in-flight `GatewayEvent::Exec` saat pembatalan order akibat TTL habis selesai sehingga fill susulan tepat sebelum pembatalan tidak hilang menjadi status Missed.
+  - `bot-exec` test: tambahkan unit test integrasi `execute_passive_entry_drains_in_flight_fill_on_timeout` yang memverifikasi fill in-flight berhasil diserap.
+  - `botd`: tangani kegagalan shutdown engine actor dengan mencatat log peringatan terstruktur alih-alih `unwrap_or(0)` tanpa jejak.
 - **Perbaikan Audit Repo (2026-11-25):** `bot-exec::entry`: error `upsert_fill`/`append_event` kini dipropagasikan (tidak lagi dibuang), pembatalan order saat TTL habis diperiksa (`-2011`/`-2013` dianggap jinak, error lain dikembalikan) + tes `cancel_error_is_benign`; `bot-exec::paper`: event yang dibuang `try_send` kini dicatat `warn!`; `botd`: `live_confirmation_file` wajib berisi teks (bukan file kosong) + tes.
 - **Perbaikan Audit Menyeluruh Pasca-M17 (#1–#16):**
   - `bot-engine`: hilangkan busy-loop saat `user_events_rx` tertutup (#1), dukung penuh `Long`/`Short` + `GTX` + `AlgoProtectionManager` + `CrossVenueBudget` + `BtcSpikeGuard` (#2, #14), perbaiki `switch_venue` `Flatten` + refresh `exchangeInfo` per `(Venue, Symbol)` + rekonsiliasi target (#3), lindungi fill parsial & tandai `OpenUnprotected` bila pasang proteksi gagal (#5), alirkan `RuntimeHealth` nyata & PnL realisasi ke `CombinedEquityCounters` (#8), serta tambah `PanicFlatten`, `ClosePosition`, `SetParam` tighten-only, `DisableStrategy`, dan `GetFullSnapshot` (#4, #9, #16) + suite regresi `audit_fixes.rs`.

@@ -28,6 +28,7 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-25 (Perbaikan Audit Lanjutan):** perbaiki temuan race TTL drain in-flight exec reports & mark unknown needs query saat `cancel_replace` network error di `crates/bot-exec/src/entry.rs`; perbaiki log terstruktur shutdown `botd/src/main.rs`; tambah regression test `execute_passive_entry_drains_in_flight_fill_on_timeout`; pasang Rust toolchain dan jalankan `scripts/verify.sh` penuh (semua pemeriksaan lulus).
 - **2026-11-25 (Audit repo ponytail):** perbaiki 5 temuan di `bot-exec` (`entry.rs`, `paper.rs`) & `botd` (guard `live_confirmation_file` non-kosong); `scripts/verify.sh` hijau. Belum teruji: tes kegagalan store pada `entry.rs`; jalur fill susulan setelah cancel TTL (andalkan rekonsiliasi). Terbuka: format isi konfirmasi live yang lebih ketat (butuh ADR).
 - **2026-11-24 (Audit Menyeluruh Pasca-M17 #1–#16 & Installer Terpadu `install.sh`):**
   - Menutup seluruh 16 temuan audit (Must Fix #1–#9, Should Fix #10–#14, Nice to Have #15–#16) di `bot-engine`, `bot-ipc`, `botd`, `bot-backtest`, `botctl`, `web-ui`, `desktop-ui`, `scripts/verify.sh`, dan `scripts/install-system.sh`.

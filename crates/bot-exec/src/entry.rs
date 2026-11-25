@@ -304,10 +304,36 @@ pub async fn execute_passive_entry<G: ExchangeGateway + ?Sized>(
                             active_cid = None;
                             active_price = None;
                         }
-                        Err(err) => return Err(EntryExecError::Gateway(err)),
+                        Err(err) => {
+                            // On network / unknown gateway error, mark the replacement order as needing
+                            // query so reconciliation / operator knows state, and don't assume previous order canceled.
+                            fsm.mark_unknown_needs_query(plan.venue, &new_cid, ms_to_dt(book.ts_ms));
+                            return Err(EntryExecError::Gateway(err));
+                        }
                     }
                 }
             }
+        }
+    }
+
+    // Drain any in-flight execution reports that arrived right before/during cancel.
+    while let Ok(ev) = exec_rx.try_recv() {
+        if let GatewayEvent::Exec(exec) = ev
+            && let FsmApplyOutcome::Updated {
+                new_fill,
+                fee_quote,
+                ..
+            } = fsm.apply_exec_event(&exec, &plan.quote_asset, None)
+            && let Some(fill) = new_fill
+        {
+            let fq = fill.qty.as_decimal();
+            let fp = fill.price.as_decimal();
+            total_filled = total_filled.saturating_add(fq);
+            total_notional = total_notional.saturating_add(fq.saturating_mul(fp));
+            total_fees = total_fees.saturating_add(fee_quote);
+            store.upsert_fill(&fill)?;
+            let env = JournalEnvelope::new(JournalEvent::FillRecorded { fill });
+            store.append_event(exec.event_time_ms, &env)?;
         }
     }
 

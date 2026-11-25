@@ -844,4 +844,77 @@ mod audit_regression_tests {
             "failed cancel_order must not be counted as handled"
         );
     }
+
+    #[tokio::test]
+    async fn execute_passive_entry_drains_in_flight_fill_on_timeout() {
+        use bot_exchange::VenueAdapter;
+        use bot_exec::{PassiveEntryOutcome, PassiveEntryPlan, TopOfBook, execute_passive_entry};
+        use bot_types::Qty;
+        use std::time::Duration;
+        use tokio::sync::watch;
+
+        let sym = Symbol("ETHUSDT".into());
+        let rules = sample_rules();
+        let broker = PaperBroker::new(PaperBrokerConfig {
+            initial_quote_balance: Decimal::from(10_000_u32),
+            ..PaperBrokerConfig::default()
+        });
+        broker.activate().await.expect("activate broker");
+        let mut exec_rx = broker.take_event_rx().expect("event rx");
+        let mut store = SqliteStore::open_in_memory().expect("sqlite");
+        let mut fsm = OrderFsm::new();
+
+        let (_book_tx, mut book_rx) = watch::channel(TopOfBook {
+            bid: Price(Decimal::from(100_u32)),
+            ask: Price(Decimal::from(101_u32)),
+            ts_ms: 1_000,
+        });
+
+        let plan = PassiveEntryPlan {
+            venue: Venue::Spot,
+            symbol: sym.clone(),
+            quote_asset: "USDT".into(),
+            qty: Qty(Decimal::from(2_u32)),
+            limit_price_max: Price(Decimal::from(105_u32)),
+            rules,
+            ttl: Duration::from_millis(50),
+            max_replaces: 3,
+            position_id: Uuid::new_v4(),
+            bot_id: "b01".into(),
+            run_id: 1,
+        };
+
+        // Fill occurs shortly before cancel completes on timeout
+        let broker_ref = &broker;
+        let sym_c = sym.clone();
+        let driver = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            // Ask drops to 100.00 -> executes the order on the broker
+            broker_ref.on_price_tick(
+                &sym_c,
+                Price(Decimal::from(99_u32)),
+                Price(Decimal::from(100_u32)),
+                1_020,
+            );
+        };
+
+        let (res, ()) = tokio::join!(
+            execute_passive_entry(
+                &broker,
+                &mut store,
+                &mut fsm,
+                &plan,
+                &mut book_rx,
+                &mut exec_rx
+            ),
+            driver
+        );
+
+        match res.expect("entry succeeds") {
+            PassiveEntryOutcome::Filled { filled_qty, .. } => {
+                assert_eq!(filled_qty.as_decimal(), Decimal::from(2_u32));
+            }
+            other => panic!("expected Filled from drained exec, got {other:?}"),
+        }
+    }
 }

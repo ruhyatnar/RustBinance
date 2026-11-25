@@ -460,7 +460,13 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         wd.abort();
     }
 
-    let canceled_entries = engine_handle.shutdown(unix_now_ms()).await.unwrap_or(0);
+    let canceled_entries = match engine_handle.shutdown(unix_now_ms()).await {
+        Ok(n) => n,
+        Err(err) => {
+            warn!(error = %err, "engine actor shutdown failed or channel closed; canceled entry count unknown");
+            0
+        }
+    };
     let _ = engine_join.await;
     telemetry_bridge.abort();
     uds_handle.abort();
