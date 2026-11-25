@@ -23,6 +23,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+uuid = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+time = { workspace = true }

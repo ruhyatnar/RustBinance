@@ -1,18 +1,73 @@
 //! §13.3 Gate evaluators (G1 walk-forward backtest + G2–G4 SQLite operational journal analyzer)
 //! and Markdown report renderers (M14).
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use bot_store::{JournalEvent, SqliteStore, StoreError};
-use bot_types::{EngineMode, PositionState, Venue};
+use bot_types::{Direction, EngineMode, PositionState, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::metrics::{BacktestMetrics, ParameterSensitivityReport};
 use crate::walk_forward::WalkForwardSummary;
 
-/// Spot validation gate identifier (§13.3).
+/// Validation gate scope per §13.3: Spot, Futures-Long, and Futures-Short are evaluated separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GateScope {
+    /// Spot venue (Long only).
+    Spot,
+    /// USDⓈ-M Futures venue, Long positions only.
+    FuturesLong,
+    /// USDⓈ-M Futures venue, Short positions only.
+    FuturesShort,
+}
+
+impl GateScope {
+    /// Parse scope string (`spot`, `futures-long`, `futures-short`, case-insensitive).
+    #[must_use]
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "spot" => Some(Self::Spot),
+            "futures-long" | "futures_long" | "usdm-long" => Some(Self::FuturesLong),
+            "futures-short" | "futures_short" | "usdm-short" => Some(Self::FuturesShort),
+            _ => None,
+        }
+    }
+
+    /// Human-readable scope label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Spot => "Spot",
+            Self::FuturesLong => "Futures-Long",
+            Self::FuturesShort => "Futures-Short",
+        }
+    }
+
+    /// Underlying exchange venue.
+    #[must_use]
+    pub const fn venue(self) -> Venue {
+        match self {
+            Self::Spot => Venue::Spot,
+            Self::FuturesLong | Self::FuturesShort => Venue::UsdsFutures,
+        }
+    }
+
+    /// Optional position direction filter (`None` for Spot, `Some(Long|Short)` for Futures).
+    #[must_use]
+    pub const fn direction(self) -> Option<Direction> {
+        match self {
+            Self::Spot => None,
+            Self::FuturesLong => Some(Direction::Long),
+            Self::FuturesShort => Some(Direction::Short),
+        }
+    }
+}
+
+/// Spot/Futures validation gate identifier (§13.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpotGate {
     /// G1: Walk-forward backtest (>= 3 years, >= 300 trades, net 2x slippage).
@@ -102,29 +157,35 @@ pub struct G1GateVerdict {
     pub checks: Vec<GateCheckItem>,
 }
 
-/// Operational metrics aggregated from `SqliteStore` journal for a specific `(Venue, Gate)`.
+/// Operational metrics aggregated from `SqliteStore` journal for a specific `(GateScope, Gate)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationalGateMetrics {
     /// Target venue strictly filtered from the journal.
     pub venue: Venue,
+    /// Validation scope (`Spot`, `FuturesLong`, or `FuturesShort`).
+    pub scope: GateScope,
     /// Gate evaluated (`G2`, `G3`, or `G4`).
     pub gate: SpotGate,
-    /// Total trade fills recorded for `venue`.
+    /// Total trade fills recorded for `scope`.
     pub total_fills: usize,
-    /// Total closed positions recorded for `venue`.
+    /// Total closed positions recorded for `scope`.
     pub closed_positions: usize,
-    /// Sum of realized `PnL` in quote currency across closed positions for `venue`.
+    /// Sum of realized `PnL` in quote currency across closed positions for `scope`.
     #[serde(with = "rust_decimal::serde::str")]
     pub realized_pnl_quote: Decimal,
-    /// Sum of commissions paid across fills for `venue`.
+    /// Sum of commissions paid across fills for `scope`.
     #[serde(with = "rust_decimal::serde::str")]
     pub total_fees_quote: Decimal,
-    /// Observed duration in whole days between first and last venue event.
+    /// Observed duration in whole days between first and last scoped event.
     pub observed_days: u64,
     /// Number of `Halted` / `Killed` engine mode transitions recorded.
     pub halt_events: usize,
-    /// Number of position close reasons mentioning `orphan` or `reconcil` for `venue`.
+    /// Number of position close reasons mentioning `orphan` or `reconcil` for `scope`.
     pub reconcile_incidents: usize,
+    /// Number of Futures liquidation / `MARGIN_CALL` incidents recorded for `scope`.
+    pub liquidation_incidents: usize,
+    /// Number of Futures unprotected / missing algo SL incidents recorded for `scope`.
+    pub unprotected_algo_incidents: usize,
     /// True only if all automated §13.3 criteria passed.
     pub passed: bool,
     /// Individual criterion checks.
@@ -251,7 +312,87 @@ pub fn evaluate_sqlite_gate(
     venue: Venue,
     gate: SpotGate,
 ) -> Result<OperationalGateMetrics, GateReportError> {
+    let scope = match venue {
+        Venue::Spot => GateScope::Spot,
+        Venue::UsdsFutures => GateScope::FuturesLong,
+    };
+    evaluate_sqlite_gate_inner(store, venue, None, scope, gate)
+}
+
+/// Analyze a `SqliteStore` journal strictly for `scope` (`Spot`, `FuturesLong`, or `FuturesShort`)
+/// and evaluate automated §13.3 gate criteria (including Futures liquidation & unprotected checks).
+///
+/// # Errors
+/// Returns [`GateReportError::Store`] if reading from SQLite fails.
+pub fn evaluate_sqlite_gate_for_scope(
+    store: &SqliteStore,
+    scope: GateScope,
+    gate: SpotGate,
+) -> Result<OperationalGateMetrics, GateReportError> {
+    evaluate_sqlite_gate_inner(store, scope.venue(), scope.direction(), scope, gate)
+}
+
+fn index_venue_directions(
+    rows: &[(i64, i64, bot_store::JournalEnvelope)],
+    venue: Venue,
+) -> (HashMap<Uuid, Direction>, HashMap<String, Uuid>) {
+    let mut pos_directions: HashMap<Uuid, Direction> = HashMap::new();
+    let mut order_positions: HashMap<String, Uuid> = HashMap::new();
+    for (_seq, _ts_ms, env) in rows {
+        match &env.event {
+            JournalEvent::PositionOpened { position } if position.venue == venue => {
+                pos_directions.insert(position.id, position.direction);
+            }
+            JournalEvent::OrderIntended { order } if order.venue == venue => {
+                if let Some(pid) = order.position_id {
+                    order_positions.insert(order.client_id.clone(), pid);
+                }
+            }
+            _ => {}
+        }
+    }
+    (pos_directions, order_positions)
+}
+
+fn event_matches_scope(
+    env: &bot_store::JournalEnvelope,
+    venue: Venue,
+    direction_filter: Option<Direction>,
+    pos_directions: &HashMap<Uuid, Direction>,
+    order_positions: &HashMap<String, Uuid>,
+) -> bool {
+    match &env.event {
+        JournalEvent::FillRecorded { fill } if fill.venue == venue => {
+            direction_filter.is_none_or(|dir| {
+                order_positions
+                    .get(&fill.client_id)
+                    .and_then(|pid| pos_directions.get(pid))
+                    == Some(&dir)
+            })
+        }
+        JournalEvent::PositionOpened { position } if position.venue == venue => {
+            direction_filter.is_none_or(|dir| position.direction == dir)
+        }
+        JournalEvent::PositionStateChanged {
+            venue: pos_venue,
+            position_id,
+            ..
+        } if *pos_venue == venue => {
+            direction_filter.is_none_or(|dir| pos_directions.get(position_id) == Some(&dir))
+        }
+        _ => env.venue() == Some(venue) && direction_filter.is_none(),
+    }
+}
+
+fn evaluate_sqlite_gate_inner(
+    store: &SqliteStore,
+    venue: Venue,
+    direction_filter: Option<Direction>,
+    scope: GateScope,
+    gate: SpotGate,
+) -> Result<OperationalGateMetrics, GateReportError> {
     let rows = store.read_journal_after(0)?;
+    let (pos_directions, order_positions) = index_venue_directions(&rows, venue);
 
     let mut total_fills: usize = 0;
     let mut closed_positions: usize = 0;
@@ -259,20 +400,27 @@ pub fn evaluate_sqlite_gate(
     let mut total_fees_quote = Decimal::ZERO;
     let mut halt_events: usize = 0;
     let mut reconcile_incidents: usize = 0;
+    let mut liquidation_incidents: usize = 0;
+    let mut unprotected_algo_incidents: usize = 0;
     let mut min_ts_ms: Option<i64> = None;
     let mut max_ts_ms: Option<i64> = None;
 
     for (_seq, ts_ms, env) in rows {
-        let event_venue = env.venue();
-        let belongs_to_venue = event_venue == Some(venue);
+        let matches_scope = event_matches_scope(
+            &env,
+            venue,
+            direction_filter,
+            &pos_directions,
+            &order_positions,
+        );
 
-        if belongs_to_venue {
+        if matches_scope {
             min_ts_ms = Some(min_ts_ms.map_or(ts_ms, |m| m.min(ts_ms)));
             max_ts_ms = Some(max_ts_ms.map_or(ts_ms, |m| m.max(ts_ms)));
         }
 
         match &env.event {
-            JournalEvent::FillRecorded { fill } if fill.venue == venue => {
+            JournalEvent::FillRecorded { fill } if fill.venue == venue && matches_scope => {
                 total_fills += 1;
                 total_fees_quote += fill.fee;
             }
@@ -282,7 +430,7 @@ pub fn evaluate_sqlite_gate(
                 realized_pnl_quote: pnl,
                 close_reason,
                 ..
-            } if *pos_venue == venue => {
+            } if *pos_venue == venue && matches_scope => {
                 if *state == PositionState::Closed {
                     closed_positions += 1;
                     realized_pnl_quote += *pnl;
@@ -291,6 +439,15 @@ pub fn evaluate_sqlite_gate(
                     let lower = reason.to_ascii_lowercase();
                     if lower.contains("orphan") || lower.contains("reconcil") {
                         reconcile_incidents += 1;
+                    }
+                    if lower.contains("liquidat") || lower.contains("margin_call") {
+                        liquidation_incidents += 1;
+                    }
+                    if lower.contains("unprotected")
+                        || lower.contains("algo_cancel")
+                        || lower.contains("sl_missing")
+                    {
+                        unprotected_algo_incidents += 1;
                     }
                 }
             }
@@ -310,10 +467,50 @@ pub fn evaluate_sqlite_gate(
         _ => 0,
     };
 
+    let checks = build_operational_checks(
+        venue,
+        gate,
+        observed_days,
+        total_fills,
+        closed_positions,
+        reconcile_incidents,
+        liquidation_incidents,
+        unprotected_algo_incidents,
+    );
+    let passed = checks.iter().all(|c| c.passed);
+
+    Ok(OperationalGateMetrics {
+        venue,
+        scope,
+        gate,
+        total_fills,
+        closed_positions,
+        realized_pnl_quote,
+        total_fees_quote,
+        observed_days,
+        halt_events,
+        reconcile_incidents,
+        liquidation_incidents,
+        unprotected_algo_incidents,
+        passed,
+        checks,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_operational_checks(
+    venue: Venue,
+    gate: SpotGate,
+    observed_days: u64,
+    total_fills: usize,
+    closed_positions: usize,
+    reconcile_incidents: usize,
+    liquidation_incidents: usize,
+    unprotected_algo_incidents: usize,
+) -> Vec<GateCheckItem> {
     let min_days = gate.min_duration_days();
     let min_trades = gate.min_trades();
-
-    let checks = vec![
+    let mut checks = vec![
         GateCheckItem {
             name: "Operational duration".into(),
             threshold: format!(">= {min_days} days"),
@@ -334,21 +531,21 @@ pub fn evaluate_sqlite_gate(
         },
     ];
 
-    let passed = checks.iter().all(|c| c.passed);
-
-    Ok(OperationalGateMetrics {
-        venue,
-        gate,
-        total_fills,
-        closed_positions,
-        realized_pnl_quote,
-        total_fees_quote,
-        observed_days,
-        halt_events,
-        reconcile_incidents,
-        passed,
-        checks,
-    })
+    if venue == Venue::UsdsFutures {
+        checks.push(GateCheckItem {
+            name: "Liquidation / MARGIN_CALL incidents".into(),
+            threshold: "== 0".into(),
+            observed: liquidation_incidents.to_string(),
+            passed: liquidation_incidents == 0,
+        });
+        checks.push(GateCheckItem {
+            name: "Unprotected / algo SL missing incidents".into(),
+            threshold: "== 0".into(),
+            observed: unprotected_algo_incidents.to_string(),
+            passed: unprotected_algo_incidents == 0,
+        });
+    }
+    checks
 }
 
 /// Render a Markdown report for an operational gate (`G2`, `G3`, or `G4`).
@@ -362,11 +559,12 @@ pub fn render_operational_gate_markdown(metrics: &OperationalGateMetrics) -> Str
     };
     let _ = writeln!(
         out,
-        "# Gate {} — Operational Report ({:?})\n",
+        "# Gate {} — Operational Report ({})\n",
         metrics.gate.as_str(),
-        metrics.venue
+        metrics.scope.as_str()
     );
     let _ = writeln!(out, "- **Status:** `{status}`");
+    let _ = writeln!(out, "- **Scope:** `{}`", metrics.scope.as_str());
     let _ = writeln!(out, "- **Venue:** `{:?}`", metrics.venue);
     let _ = writeln!(
         out,
@@ -392,9 +590,22 @@ pub fn render_operational_gate_markdown(metrics: &OperationalGateMetrics) -> Str
     );
     let _ = writeln!(
         out,
-        "- **Reconcile / orphan incidents:** {}\n",
+        "- **Reconcile / orphan incidents:** {}",
         metrics.reconcile_incidents
     );
+    if metrics.venue == Venue::UsdsFutures {
+        let _ = writeln!(
+            out,
+            "- **Liquidation / MARGIN_CALL incidents:** {}",
+            metrics.liquidation_incidents
+        );
+        let _ = writeln!(
+            out,
+            "- **Unprotected / algo SL missing incidents:** {}",
+            metrics.unprotected_algo_incidents
+        );
+    }
+    let _ = writeln!(out);
 
     let _ = writeln!(out, "## §13.3 Automated Criteria Check\n");
     let _ = writeln!(out, "| Criterion | Threshold | Observed | Result |");

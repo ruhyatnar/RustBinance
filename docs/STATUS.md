@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M17 (M16 `VenueManager` & Spot ⇄ Futures switching, Short selesai; menunggu persetujuan pemilik untuk lanjut ke M17)
+**Milestone aktif:** Selesai (M00–M17 engineering/tooling tuntas; operasional G2–G5 Spot & Futures pending sebelum live per `ADR-0005`)
 **Mode build:** paper / testnet (tidak ada live)
 **Terakhir diperbarui:** 2026-11-24
 
@@ -22,12 +22,16 @@
 - [x] **M14** — OPERASIONAL: gerbang Spot G2→G5 (engineering/tooling selesai via `ADR-0005`; operasional G2–G5 pending sebelum live) → `docs/milestones/M14-*.md`
 - [x] **M15** — FuturesAdapter  → `docs/milestones/M15-*.md`
 - [x] **M16** — VenueManager & peralihan Spot ⇄ Futures, Short  → `docs/milestones/M16-*.md`
-- [ ] **M17** — OPERASIONAL: gerbang Futures; opsional dual  → `docs/milestones/M17-*.md`
+- [x] **M17** — OPERASIONAL: gerbang Futures; opsional dual (engineering/tooling & runbook selesai via `ADR-0005`; operasional G2–G5 Futures-Long/Short & `ADR-0006` mode `dual` pending sebelum live) → `docs/milestones/M17-*.md`
 
 ## Pertanyaan terbuka (untuk pemilik)
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-24 (M17 — Tooling & Runbook Gerbang Futures + Draft ADR-0006 `dual`):**
+  - `crates/bot-backtest`: tambah `GateScope` (`Spot`, `FuturesLong`, `FuturesShort`), `evaluate_sqlite_gate_for_scope` (pemisahan ketat Long vs Short + pengecekan `liquidation_incidents == 0` & `unprotected_algo_incidents == 0`), flag `--scope` di CLI `bot-backtest gate-report`, dan tes integrasi SQLite di `gate_report_suite.rs`.
+  - `docs/gates/futures/`: tambah runbook & templat gerbang `long/G1.md`–`G5.md`, `short/G1.md`–`G5.md`, `chaos.md` (§13.4 Futures), dan `venue-switch-testnet.md` (uji peralihan Spot ⇄ Futures di testnet) — seluruhnya bertanda `PENDING OPERATIONAL RUN (NOT APPROVED FOR LIVE)`.
+  - `docs/decisions/0006-dual-venue-mode-gate.md`: draft ADR prasyarat aktivasi mode `dual` (wajib lulus G4 Spot & G4 Futures + konfirmasi pemilik).
 - **2026-11-24 (M16 — `VenueManager`, Spot ⇄ Futures switching, Cross-Venue Risk, Short & UI Switcher):**
   - `crates/bot-venue`: `VenueManager` state machine (`Disabled → Activating → Active → Draining`), prasyarat mode/cooldown 60s/limit 3× per hari, rollback atomik, dan transisi `Draining → Disabled`.
   - `crates/bot-risk`: `CrossVenueBudget` (equity gabungan USD, `portfolio_heat` gabungan, `cross_venue_same_symbol = block_opposite`, `capital_allocation_usd`) + `BtcSpikeGuard` untuk Short (+1.5%/15m atau +3%/60m dengan histeresis).
