@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { MarketTickSummary } from '$lib/api/types';
+	import Panel from '$lib/components/ui/Panel.svelte';
 	import { formatDecimalString, formatUtcTime } from '$lib/format/decimal';
 
 	interface Props {
@@ -9,44 +10,37 @@
 	let { ticks }: Props = $props();
 </script>
 
-<section class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-	<div class="mb-3 flex items-center justify-between">
-		<h2 class="text-xs font-bold tracking-wider text-slate-400 uppercase">
-			Watchlist & Top-of-Book
-		</h2>
-		<span class="text-xs text-slate-500">{ticks.length} symbols</span>
-	</div>
-
+<Panel title="Watchlist & Top-of-Book" subtitle={`${ticks.length} symbols`} padding="none">
 	{#if ticks.length === 0}
-		<p class="py-4 text-center text-xs text-slate-500">No conflated market ticks yet.</p>
+		<p class="py-6 text-center font-mono text-xs text-ink-dim">No conflated market ticks yet.</p>
 	{:else}
 		<div class="overflow-x-auto">
-			<table class="w-full text-left font-mono text-xs">
-				<thead class="border-b border-slate-800 text-slate-400">
+			<table class="w-full text-left font-mono text-xs tabular-nums">
+				<thead class="border-b border-hairline-subtle bg-surface-inset/70 text-[10px] tracking-[0.08em] text-ink-muted uppercase">
 					<tr>
-						<th class="py-1.5 pr-3">Symbol</th>
-						<th class="py-1.5 pr-3">Venue</th>
-						<th class="py-1.5 pr-3">Bid</th>
-						<th class="py-1.5 pr-3">Ask</th>
-						<th class="py-1.5 pr-3">Last</th>
-						<th class="py-1.5 pr-3">Spread (bps)</th>
-						<th class="py-1.5 text-right">Updated</th>
+						<th class="px-4 py-2">Symbol</th>
+						<th class="px-3 py-2">Venue</th>
+						<th class="px-3 py-2">Bid</th>
+						<th class="px-3 py-2">Ask</th>
+						<th class="px-3 py-2">Last</th>
+						<th class="px-3 py-2">Spread (bps)</th>
+						<th class="px-4 py-2 text-right">Updated</th>
 					</tr>
 				</thead>
-				<tbody class="divide-y divide-slate-800/80">
+				<tbody class="divide-y divide-hairline-subtle">
 					{#each ticks as tick (`${tick.venue}:${tick.symbol}`)}
-						<tr>
-							<td class="py-1.5 pr-3 font-semibold text-white">{tick.symbol}</td>
-							<td class="py-1.5 pr-3 uppercase text-slate-400">{tick.venue}</td>
-							<td class="py-1.5 pr-3 text-emerald-300">{formatDecimalString(tick.bid)}</td>
-							<td class="py-1.5 pr-3 text-red-300">{formatDecimalString(tick.ask)}</td>
-							<td class="py-1.5 pr-3 text-slate-100">{formatDecimalString(tick.last)}</td>
-							<td class="py-1.5 pr-3 text-amber-300">{formatDecimalString(tick.spread_bps)}</td>
-							<td class="py-1.5 text-right text-slate-500">{formatUtcTime(tick.ts_ms)}</td>
+						<tr class="transition hover:bg-surface-elevated/60">
+							<td class="px-4 py-2 font-semibold text-ink-strong">{tick.symbol}</td>
+							<td class="px-3 py-2 text-ink-muted uppercase">{tick.venue}</td>
+							<td class="px-3 py-2 text-positive">{formatDecimalString(tick.bid)}</td>
+							<td class="px-3 py-2 text-danger">{formatDecimalString(tick.ask)}</td>
+							<td class="px-3 py-2 text-ink-strong">{formatDecimalString(tick.last)}</td>
+							<td class="px-3 py-2 text-warning">{formatDecimalString(tick.spread_bps)}</td>
+							<td class="px-4 py-2 text-right text-ink-dim">{formatUtcTime(tick.ts_ms)}</td>
 						</tr>
 					{/each}
 				</tbody>
 			</table>
 		</div>
 	{/if}
-</section>
+</Panel>

@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { RiskSummary } from '$lib/api/types';
-	import { decimalDirectionIcon, formatDecimalString } from '$lib/format/decimal';
+	import Panel from '$lib/components/ui/Panel.svelte';
+	import StatusPill from '$lib/components/ui/StatusPill.svelte';
+	import { decimalDirectionIcon, decimalSign, formatDecimalString } from '$lib/format/decimal';
 
 	interface Props {
 		risk: RiskSummary;
@@ -22,69 +24,79 @@
 			? Math.min(100, Math.round((risk.open_positions / risk.max_positions) * 100))
 			: 0
 	);
+	const daySign = $derived(decimalSign(risk.day_pnl_pct));
+	const btcSecure = $derived(risk.btc_guard === 'SECURE');
 </script>
 
-<section class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-	<div class="mb-3 flex items-center justify-between">
-		<h2 class="text-xs font-bold tracking-wider text-slate-400 uppercase">Risk</h2>
-		<span
-			class={`rounded px-2 py-0.5 text-xs font-semibold ${
-				risk.btc_guard === 'SECURE'
-					? 'bg-emerald-500/15 text-emerald-300'
-					: 'bg-red-500/20 text-red-300'
-			}`}
-		>
-			BTC Guard: {risk.btc_guard}
-		</span>
-	</div>
+<Panel title="Risk & Guards" subtitle="Account Aggregate">
+	{#snippet actions()}
+		<StatusPill
+			label={`BTC Guard: ${risk.btc_guard}`}
+			icon={btcSecure ? '●' : '⚠'}
+			tone={btcSecure ? 'positive' : 'danger'}
+		/>
+	{/snippet}
 
-	<div class="space-y-3 text-xs">
+	<div class="space-y-3.5 text-xs">
 		<div>
-			<div class="mb-1 flex justify-between font-mono">
-				<span class="text-slate-400">Heat</span>
-				<span>
+			<div class="mb-1.5 flex justify-between font-mono tabular-nums">
+				<span class="text-ink-muted">Portfolio Heat</span>
+				<span class="text-ink-strong">
 					{formatDecimalString(risk.heat_pct)}% / {formatDecimalString(risk.heat_max_pct)}%
 				</span>
 			</div>
-			<div class="h-2 overflow-hidden rounded bg-slate-800">
+			<div class="h-1.5 overflow-hidden rounded-full bg-surface-inset">
 				<div
-					class={`h-full ${heatBar >= 80 ? 'bg-red-500' : heatBar >= 50 ? 'bg-amber-400' : 'bg-sky-400'}`}
+					class={`h-full transition-[width] duration-200 ${
+						heatBar >= 80 ? 'bg-danger-solid' : heatBar >= 50 ? 'bg-warning' : 'bg-telemetry'
+					}`}
 					style={`width: ${heatBar}%`}
 				></div>
 			</div>
 		</div>
 
-		<div>
-			<div class="mb-1 flex justify-between font-mono">
-				<span class="text-slate-400">Day PnL (halt {formatDecimalString(risk.limits.daily_halt_pct)}%)</span>
-				<span>
-					{decimalDirectionIcon(risk.day_pnl_pct)}
-					{formatDecimalString(risk.day_pnl_pct, { signed: true, suffix: '%' })}
-				</span>
-			</div>
+		<div class="flex items-center justify-between rounded border border-hairline-subtle bg-surface-inset px-3 py-2 font-mono tabular-nums">
+			<span class="text-ink-muted">
+				Day PnL <span class="text-ink-dim">(halt {formatDecimalString(risk.limits.daily_halt_pct)}%)</span>
+			</span>
+			<span
+				class={`font-semibold ${
+					daySign > 0 ? 'text-positive' : daySign < 0 ? 'text-danger' : 'text-ink-strong'
+				}`}
+			>
+				{decimalDirectionIcon(risk.day_pnl_pct)}
+				{formatDecimalString(risk.day_pnl_pct, { signed: true, suffix: '%' })}
+			</span>
 		</div>
 
 		<div>
-			<div class="mb-1 flex justify-between font-mono">
-				<span class="text-slate-400">Drawdown (kill {formatDecimalString(risk.limits.kill_pct)}%)</span>
-				<span>{formatDecimalString(risk.drawdown_pct, { suffix: '%' })}</span>
+			<div class="mb-1.5 flex justify-between font-mono tabular-nums">
+				<span class="text-ink-muted">
+					Drawdown <span class="text-ink-dim">(kill {formatDecimalString(risk.limits.kill_pct)}%)</span>
+				</span>
+				<span class="text-warning">{formatDecimalString(risk.drawdown_pct, { suffix: '%' })}</span>
 			</div>
-			<div class="h-2 overflow-hidden rounded bg-slate-800">
+			<div class="h-1.5 overflow-hidden rounded-full bg-surface-inset">
 				<div
-					class={`h-full ${ddBar >= 70 ? 'bg-red-500' : 'bg-amber-500'}`}
+					class={`h-full transition-[width] duration-200 ${
+						ddBar >= 70 ? 'bg-danger-solid' : 'bg-warning'
+					}`}
 					style={`width: ${ddBar}%`}
 				></div>
 			</div>
 		</div>
 
 		<div>
-			<div class="mb-1 flex justify-between font-mono">
-				<span class="text-slate-400">Open Positions</span>
-				<span>{risk.open_positions} / {risk.max_positions}</span>
+			<div class="mb-1.5 flex justify-between font-mono tabular-nums">
+				<span class="text-ink-muted">Open Positions</span>
+				<span class="text-ink-strong">{risk.open_positions} / {risk.max_positions}</span>
 			</div>
-			<div class="h-2 overflow-hidden rounded bg-slate-800">
-				<div class="h-full bg-indigo-400" style={`width: ${posBar}%`}></div>
+			<div class="h-1.5 overflow-hidden rounded-full bg-surface-inset">
+				<div
+					class="h-full bg-accent transition-[width] duration-200"
+					style={`width: ${posBar}%`}
+				></div>
 			</div>
 		</div>
 	</div>
-</section>
+</Panel>
