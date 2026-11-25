@@ -2,7 +2,7 @@
 
 **Milestone aktif:** Selesai (M00–M17 engineering/tooling tuntas; operasional G2–G5 Spot & Futures pending sebelum live per `ADR-0005`)
 **Mode build:** paper / testnet (tidak ada live)
-**Terakhir diperbarui:** 2026-11-24
+**Terakhir diperbarui:** 2026-11-25
 
 ## Progres
 - [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
@@ -28,6 +28,7 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-25 (Redesign Web UI — Romer Hybrid):** merombak menyeluruh `web-ui/` berbasis referensi `stitch_romer_saas_dashboard.zip` (spec `docs/superpowers/specs/2026-11-25-web-ui-romer-redesign-design.md`, plan `docs/superpowers/plans/2026-11-25-web-ui-romer-redesign.md`): token Tailwind v4 `@theme` + font offline `@fontsource/manrope` & `@fontsource/inter`, 4 primitif UI (`Panel`, `KpiCard`, `StatusPill`, `PageHeader`), sidebar kiri terkelompok + drawer responsif (`lg:hidden`), `VenueSwitchDialog` dengan `HoldToConfirm` 1,5 detik untuk `flatten`, tema obsidian Lightweight Charts, filter venue `All | Spot | Futures` (menjaga event global `venue == null`), dan restyle seluruh 9 rute + `AuthGate`. `scripts/verify.sh` hijau penuh.
 - **2026-11-25 (Perbaikan Audit Lanjutan):** perbaiki temuan race TTL drain in-flight exec reports & mark unknown needs query saat `cancel_replace` network error di `crates/bot-exec/src/entry.rs`; perbaiki log terstruktur shutdown `botd/src/main.rs`; tambah regression test `execute_passive_entry_drains_in_flight_fill_on_timeout`; pasang Rust toolchain dan jalankan `scripts/verify.sh` penuh (semua pemeriksaan lulus).
 - **2026-11-25 (Audit repo ponytail):** perbaiki 5 temuan di `bot-exec` (`entry.rs`, `paper.rs`) & `botd` (guard `live_confirmation_file` non-kosong); `scripts/verify.sh` hijau. Belum teruji: tes kegagalan store pada `entry.rs`; jalur fill susulan setelah cancel TTL (andalkan rekonsiliasi). Terbuka: format isi konfirmasi live yang lebih ketat (butuh ADR).
 - **2026-11-24 (Audit Menyeluruh Pasca-M17 #1–#16 & Installer Terpadu `install.sh`):**
