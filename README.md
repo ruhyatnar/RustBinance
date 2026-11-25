@@ -2,7 +2,21 @@
 
 Bot trading crypto Binance 24/7 berbasis Rust dengan UI Web (SvelteKit) dan Desktop (Qt6/QML, KDE Plasma 6), mendukung seluruh distro Linux utama (desktop, VPS headless, dan container/non-`systemd`). Mode default selalu **`paper`**.
 
-## Instalasi Native (Arch/CachyOS, Debian/Ubuntu, Fedora, openSUSE)
+## Instalasi Cepat & Interaktif (Satu Perintah — Semua Distro Linux)
+Gunakan installer terpadu interaktif yang mendeteksi otomatis distro Linux Anda (`Arch/CachyOS`, `Debian/Ubuntu`, `Fedora/RHEL`, `openSUSE`, atau fallback Container untuk Alpine/non-`systemd`), memasang dependensi + memastikan Rust ≥ 1.89, mem-build proyek, dan menginstal ke sistem:
+```bash
+./install.sh
+```
+Opsi non-interaktif yang tersedia:
+```bash
+./install.sh --desktop --yes      # Full Desktop (Qt6/QML + Web UI + Daemon)
+./install.sh --headless --yes     # Headless / VPS (tanpa Qt6/KDE)
+./install.sh --container --yes    # Docker / Podman Compose
+./install.sh --dry-run            # Pratinjau rencana perintah tanpa mengubah sistem
+```
+Layanan `binance-botd.service` **tidak** diaktifkan otomatis dan selalu berjalan dalam mode default `paper`.
+
+## Instalasi Manual Bertahap (Arch/CachyOS, Debian/Ubuntu, Fedora, openSUSE)
 
 ### 1. Pasang dependensi sistem
 ```bash
@@ -15,14 +29,13 @@ Bot trading crypto Binance 24/7 berbasis Rust dengan UI Web (SvelteKit) dan Desk
 
 ### 2. Build (sebagai user biasa, bukan root)
 ```bash
-./scripts/build.sh
+./scripts/build.sh                # atau ./scripts/build.sh --headless
 ```
 
 ### 3. Instal ke sistem (sebagai root)
 ```bash
 sudo ./scripts/install-system.sh
 ```
-Layanan `binance-botd.service` **tidak** diaktifkan otomatis dan berjalan dalam mode default `paper`.
 
 ### 4. Konfigurasi & mulai layanan
 ```bash

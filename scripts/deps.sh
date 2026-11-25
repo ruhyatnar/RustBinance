@@ -50,7 +50,7 @@ NTP_UNIT="chronyd"
 
 case "$PKG_MGR" in
   pacman)
-    BASE_PKGS=(base-devel git cmake ninja pkgconf openssl rust nodejs npm chrony)
+    BASE_PKGS=(base-devel curl git cmake ninja pkgconf openssl rust nodejs npm chrony)
     DESKTOP_PKGS=(extra-cmake-modules qt6-base qt6-declarative qt6-svg qt6-graphs kirigami ki18n knotifications kstatusnotifieritem qqc2-desktop-style breeze)
     PKGS=("${BASE_PKGS[@]}")
     [ "$HEADLESS" -eq 0 ] && PKGS+=("${DESKTOP_PKGS[@]}")
@@ -58,7 +58,7 @@ case "$PKG_MGR" in
     ;;
   apt)
     NTP_UNIT="chrony"
-    BASE_PKGS=(build-essential git cmake ninja-build pkg-config libssl-dev nodejs npm chrony)
+    BASE_PKGS=(build-essential curl git cmake ninja-build pkg-config libssl-dev nodejs npm chrony)
     DESKTOP_PKGS=(extra-cmake-modules qt6-base-dev qt6-declarative-dev qt6-svg-dev qml6-module-org-kde-kirigami libkf6i18n-dev libkf6notifications-dev libkf6statusnotifieritem-dev)
     PKGS=("${BASE_PKGS[@]}")
     [ "$HEADLESS" -eq 0 ] && PKGS+=("${DESKTOP_PKGS[@]}")
@@ -66,14 +66,14 @@ case "$PKG_MGR" in
     run_cmd sudo apt-get install -y "${PKGS[@]}"
     ;;
   dnf)
-    BASE_PKGS=(gcc gcc-c++ make git cmake ninja-build pkgconf-pkg-config openssl-devel rust cargo nodejs npm chrony)
+    BASE_PKGS=(gcc gcc-c++ make curl git cmake ninja-build pkgconf-pkg-config openssl-devel rust cargo nodejs npm chrony)
     DESKTOP_PKGS=(extra-cmake-modules qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtsvg-devel kf6-kirigami-devel kf6-ki18n-devel kf6-knotifications-devel kf6-kstatusnotifieritem-devel)
     PKGS=("${BASE_PKGS[@]}")
     [ "$HEADLESS" -eq 0 ] && PKGS+=("${DESKTOP_PKGS[@]}")
     run_cmd sudo dnf install -y "${PKGS[@]}"
     ;;
   zypper)
-    BASE_PKGS=(gcc gcc-c++ make git cmake ninja pkg-config libopenssl-devel rust cargo nodejs npm chrony)
+    BASE_PKGS=(gcc gcc-c++ make curl git cmake ninja pkg-config libopenssl-devel rust cargo nodejs npm chrony)
     DESKTOP_PKGS=(extra-cmake-modules qt6-base-devel qt6-declarative-devel qt6-svg-devel kf6-kirigami-devel kf6-ki18n-devel kf6-knotifications-devel kf6-kstatusnotifieritem-devel)
     PKGS=("${BASE_PKGS[@]}")
     [ "$HEADLESS" -eq 0 ] && PKGS+=("${DESKTOP_PKGS[@]}")
@@ -88,6 +88,28 @@ esac
 
 if [ "$DRY_RUN" -eq 0 ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
   sudo systemctl enable --now "$NTP_UNIT" || true
+fi
+
+# Workspace requires Rust >= 1.89 (edition 2024); distro repos (especially Debian/Ubuntu) often lag behind.
+rust_meets_msrv() {
+  command -v rustc >/dev/null 2>&1 || return 1
+  local ver major minor
+  ver="$(rustc --version | awk '{print $2}')"
+  major="${ver%%.*}"
+  minor="${ver#*.}"; minor="${minor%%.*}"
+  [ "${major:-0}" -gt 1 ] || { [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -ge 89 ]; }
+}
+
+if ! rust_meets_msrv; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[dry-run] install/update Rust >= 1.89 via rustup (https://sh.rustup.rs)"
+  elif command -v rustup >/dev/null 2>&1; then
+    rustup toolchain install stable --profile minimal && rustup default stable
+  else
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+    # shellcheck source=/dev/null
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+  fi
 fi
 
 if [ "$DRY_RUN" -eq 0 ] && command -v rustc >/dev/null 2>&1; then

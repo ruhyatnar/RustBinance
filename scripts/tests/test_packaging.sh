@@ -92,6 +92,40 @@ test_compose_invariants() {
   ! grep -qi 'mode=live' "$cf"
 }
 
+test_unified_installer_syntax_and_help() {
+  bash -n "$ROOT/install.sh"
+  bash -n "$ROOT/scripts/build.sh"
+  bash "$ROOT/install.sh" --help | grep -q -- "--headless"
+  bash "$ROOT/scripts/build.sh" --help | grep -q -- "--headless"
+}
+
+test_unified_installer_adapts_to_distros_dry_run() {
+  local out
+  for mgr in pacman apt dnf zypper; do
+    out="$(BOT_PKG_MGR="$mgr" bash "$ROOT/install.sh" --headless --yes --dry-run)"
+    grep -q "Profil          : headless" <<<"$out"
+    grep -q "scripts/build.sh --headless" <<<"$out"
+    grep -q "scripts/install-system.sh" <<<"$out"
+    case "$mgr" in
+      pacman) grep -q "pacman -S" <<<"$out" ;;
+      apt)    grep -q "apt-get install" <<<"$out" ;;
+      dnf)    grep -q "dnf install" <<<"$out" ;;
+      zypper) grep -q "zypper install" <<<"$out" ;;
+    esac
+  done
+}
+
+test_unified_installer_container_fallback_on_unsupported_distro() {
+  local out
+  out="$(BOT_PKG_MGR=none bash "$ROOT/install.sh" --yes --dry-run)"
+  grep -q "Profil          : container" <<<"$out"
+  grep -q "packaging/compose.yaml" <<<"$out"
+}
+
+test_unified_installer_rejects_native_on_unsupported_distro() {
+  BOT_PKG_MGR=none bash "$ROOT/install.sh" --headless --yes --dry-run
+}
+
 assert_ok "test_deps_syntax" test_deps_syntax
 assert_ok "test_deps_dry_run_all_managers" test_deps_dry_run_all_managers
 assert_ok "test_deps_headless_skips_qt" test_deps_headless_skips_qt
@@ -102,6 +136,10 @@ assert_ok "test_install_no_hardcoded_nologin" test_install_no_hardcoded_nologin
 assert_ok "test_install_preflight_binaries_check" test_install_preflight_binaries_check
 assert_ok "test_dockerfile_security_invariants" test_dockerfile_security_invariants
 assert_ok "test_compose_invariants" test_compose_invariants
+assert_ok "test_unified_installer_syntax_and_help" test_unified_installer_syntax_and_help
+assert_ok "test_unified_installer_adapts_to_distros_dry_run" test_unified_installer_adapts_to_distros_dry_run
+assert_ok "test_unified_installer_container_fallback_on_unsupported_distro" test_unified_installer_container_fallback_on_unsupported_distro
+assert_fail "test_unified_installer_rejects_native_on_unsupported_distro" test_unified_installer_rejects_native_on_unsupported_distro
 
 echo "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
