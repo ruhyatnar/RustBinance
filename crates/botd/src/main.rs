@@ -86,19 +86,22 @@ fn enforce_live_confirmation_guard(cfg: &BotConfig) -> Result<()> {
     if cfg.general.mode != TradingMode::Live {
         return Ok(());
     }
-    if cfg.venues.spot.enabled && !Path::new(&cfg.venues.spot.live_confirmation_file).is_file() {
-        bail!(
-            "refusing to start in live mode: spot live_confirmation_file '{}' does not exist",
-            cfg.venues.spot.live_confirmation_file
-        );
+    if cfg.venues.spot.enabled {
+        check_confirmation_file("spot", &cfg.venues.spot.live_confirmation_file)?;
     }
-    if cfg.venues.futures.enabled
-        && !Path::new(&cfg.venues.futures.live_confirmation_file).is_file()
-    {
-        bail!(
-            "refusing to start in live mode: futures live_confirmation_file '{}' does not exist",
-            cfg.venues.futures.live_confirmation_file
-        );
+    if cfg.venues.futures.enabled {
+        check_confirmation_file("futures", &cfg.venues.futures.live_confirmation_file)?;
+    }
+    Ok(())
+}
+
+/// The confirmation file must exist AND contain text, so a bare `touch` is not enough.
+fn check_confirmation_file(venue: &str, path: &str) -> Result<()> {
+    let content = std::fs::read_to_string(path).map_err(|_| {
+        anyhow::anyhow!("refusing to start in live mode: {venue} live_confirmation_file '{path}' is missing or unreadable")
+    })?;
+    if content.trim().is_empty() {
+        bail!("refusing to start in live mode: {venue} live_confirmation_file '{path}' is empty");
     }
     Ok(())
 }
@@ -536,5 +539,16 @@ mod tests {
 
         cfg.general.mode = TradingMode::Live;
         assert!(enforce_live_confirmation_guard(&cfg).is_err());
+    }
+
+    #[test]
+    fn live_confirmation_guard_rejects_empty_file_accepts_nonempty() {
+        let dir = tempfile::TempDir::new().expect("tmpdir");
+        let f = dir.path().join("confirm");
+        std::fs::write(&f, "  \n").expect("write");
+        let p = f.to_str().expect("utf8");
+        assert!(check_confirmation_file("spot", p).is_err());
+        std::fs::write(&f, "I CONFIRM LIVE").expect("write");
+        assert!(check_confirmation_file("spot", p).is_ok());
     }
 }

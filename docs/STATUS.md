@@ -28,6 +28,7 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-25 (Audit repo ponytail):** perbaiki 5 temuan di `bot-exec` (`entry.rs`, `paper.rs`) & `botd` (guard `live_confirmation_file` non-kosong); `scripts/verify.sh` hijau. Belum teruji: tes kegagalan store pada `entry.rs`; jalur fill susulan setelah cancel TTL (andalkan rekonsiliasi). Terbuka: format isi konfirmasi live yang lebih ketat (butuh ADR).
 - **2026-11-24 (Audit Menyeluruh Pasca-M17 #1–#16 & Installer Terpadu `install.sh`):**
   - Menutup seluruh 16 temuan audit (Must Fix #1–#9, Should Fix #10–#14, Nice to Have #15–#16) di `bot-engine`, `bot-ipc`, `botd`, `bot-backtest`, `botctl`, `web-ui`, `desktop-ui`, `scripts/verify.sh`, dan `scripts/install-system.sh`.
   - Menambahkan installer interaktif terpadu `./install.sh` dengan deteksi otomatis distro Linux (`pacman`/`apt`/`dnf`/`zypper`/Container), jaminan Rust ≥ 1.89, dan `14/14` tes packaging lulus.

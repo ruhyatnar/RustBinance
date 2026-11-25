@@ -292,7 +292,7 @@ impl PaperBroker {
 
         if let Some(tx) = &st.event_tx {
             for ev in &events {
-                let _ = tx.try_send(ev.clone());
+                emit_event(tx, ev.clone());
             }
         }
         events
@@ -634,7 +634,7 @@ impl ExchangeGateway for PaperBroker {
             let evs = self.execute_fill_locked(&mut st, &req.client_order_id, fill_px, false, now);
             if let Some(tx) = &st.event_tx {
                 for ev in evs {
-                    let _ = tx.try_send(ev);
+                    emit_event(tx, ev);
                 }
             }
         }
@@ -697,33 +697,36 @@ impl ExchangeGateway for PaperBroker {
         let snap = ord.clone();
 
         if let Some(tx) = &st.event_tx {
-            let _ = tx.try_send(GatewayEvent::Exec(ExecEvent {
-                venue: self.config.venue,
-                event_time_ms: now,
-                transact_time_ms: now,
-                symbol: snap.symbol.clone(),
-                client_order_id: req
-                    .new_client_order_id
-                    .unwrap_or_else(|| snap.client_order_id.clone()),
-                orig_client_order_id: Some(snap.client_order_id.clone()),
-                order_id: snap.order_id,
-                order_list_id: snap.order_list_id,
-                trade_id: -1,
-                side: snap.side,
-                kind: snap.kind,
-                exec_type: "CANCELED".into(),
-                status: OrderStatus::Canceled,
-                reject_reason: "NONE".into(),
-                order_price: snap.price,
-                order_qty: snap.orig_qty,
-                last_filled_qty: Qty(Decimal::ZERO),
-                cumulative_filled_qty: snap.executed_qty,
-                last_filled_price: Price(Decimal::ZERO),
-                cumulative_quote_qty: snap.cumulative_quote_qty,
-                commission: Decimal::ZERO,
-                commission_asset: None,
-                is_maker: false,
-            }));
+            emit_event(
+                tx,
+                GatewayEvent::Exec(ExecEvent {
+                    venue: self.config.venue,
+                    event_time_ms: now,
+                    transact_time_ms: now,
+                    symbol: snap.symbol.clone(),
+                    client_order_id: req
+                        .new_client_order_id
+                        .unwrap_or_else(|| snap.client_order_id.clone()),
+                    orig_client_order_id: Some(snap.client_order_id.clone()),
+                    order_id: snap.order_id,
+                    order_list_id: snap.order_list_id,
+                    trade_id: -1,
+                    side: snap.side,
+                    kind: snap.kind,
+                    exec_type: "CANCELED".into(),
+                    status: OrderStatus::Canceled,
+                    reject_reason: "NONE".into(),
+                    order_price: snap.price,
+                    order_qty: snap.orig_qty,
+                    last_filled_qty: Qty(Decimal::ZERO),
+                    cumulative_filled_qty: snap.executed_qty,
+                    last_filled_price: Price(Decimal::ZERO),
+                    cumulative_quote_qty: snap.cumulative_quote_qty,
+                    commission: Decimal::ZERO,
+                    commission_asset: None,
+                    is_maker: false,
+                }),
+            );
         }
 
         Ok(CancelOrderAck {
@@ -788,6 +791,7 @@ impl ExchangeGateway for PaperBroker {
     }
 
     #[allow(clippy::similar_names)]
+    #[allow(clippy::too_many_lines)]
     async fn place_oco(&self, req: PlaceOcoRequest) -> Result<OcoOrderAck, GatewayError> {
         validate_client_order_id(&req.list_client_order_id)?;
         let mut st = self
@@ -872,17 +876,20 @@ impl ExchangeGateway for PaperBroker {
         ];
 
         if let Some(tx) = &st.event_tx {
-            let _ = tx.try_send(GatewayEvent::ListStatus(ListStatusEvent {
-                venue: self.config.venue,
-                event_time_ms: now,
-                symbol: req.symbol.clone(),
-                order_list_id: list_id,
-                list_client_order_id: req.list_client_order_id.clone(),
-                list_status_type: "EXEC_STARTED".into(),
-                list_order_status: "EXECUTING".into(),
-                reject_reason: "NONE".into(),
-                orders: items.clone(),
-            }));
+            emit_event(
+                tx,
+                GatewayEvent::ListStatus(ListStatusEvent {
+                    venue: self.config.venue,
+                    event_time_ms: now,
+                    symbol: req.symbol.clone(),
+                    order_list_id: list_id,
+                    list_client_order_id: req.list_client_order_id.clone(),
+                    list_status_type: "EXEC_STARTED".into(),
+                    list_order_status: "EXECUTING".into(),
+                    reject_reason: "NONE".into(),
+                    orders: items.clone(),
+                }),
+            );
         }
 
         Ok(OcoOrderAck {
@@ -1064,6 +1071,13 @@ impl VenueAdapter for PaperBroker {
             st.active = false;
         }
         Ok(())
+    }
+}
+
+/// Non-blocking send that logs instead of silently dropping when the consumer is slow/closed.
+fn emit_event(tx: &tokio::sync::mpsc::Sender<GatewayEvent>, ev: GatewayEvent) {
+    if let Err(err) = tx.try_send(ev) {
+        tracing::warn!(error = %err, "paper broker dropped gateway event");
     }
 }
 

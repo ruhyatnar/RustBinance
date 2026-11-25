@@ -170,12 +170,18 @@ pub async fn execute_passive_entry<G: ExchangeGateway + ?Sized>(
         tokio::select! {
             () = tokio::time::sleep_until(deadline) => {
                 if let Some(cid) = active_cid.as_deref() {
-                    let _ = gateway.cancel_order(CancelOrderRequest {
+                    let res = gateway.cancel_order(CancelOrderRequest {
                         symbol: plan.symbol.clone(),
                         orig_client_order_id: Some(cid.to_owned()),
                         order_id: None,
                         new_client_order_id: None,
                     }).await;
+                    if let Err(err) = res
+                        && !cancel_error_is_benign(&err)
+                    {
+                        // Order may still be live on the exchange: surface to caller/reconcile.
+                        return Err(EntryExecError::Gateway(err));
+                    }
                 }
                 break;
             }
@@ -196,9 +202,9 @@ pub async fn execute_passive_entry<G: ExchangeGateway + ?Sized>(
                         total_filled = total_filled.saturating_add(fq);
                         total_notional = total_notional.saturating_add(fq.saturating_mul(fp));
                         total_fees = total_fees.saturating_add(fee_quote);
-                        let _ = store.upsert_fill(&fill);
+                        store.upsert_fill(&fill)?;
                         let env = JournalEnvelope::new(JournalEvent::FillRecorded { fill });
-                        let _ = store.append_event(exec.event_time_ms, &env);
+                        store.append_event(exec.event_time_ms, &env)?;
                     }
                     if active_cid.as_deref() == Some(exec.client_order_id.as_str())
                         && status == OrderStatus::Filled
@@ -335,6 +341,18 @@ pub async fn execute_passive_entry<G: ExchangeGateway + ?Sized>(
     })
 }
 
+/// `-2011` / `-2013` on cancel mean the order is already terminal or unknown (e.g. filled
+/// just before the cancel): not a reason to abort. Anything else leaves the order state unknown.
+fn cancel_error_is_benign(err: &GatewayError) -> bool {
+    matches!(
+        err,
+        GatewayError::ExchangeRejected {
+            kind: ExchangeErrorKind::CancelRejected | ExchangeErrorKind::OrderNotFound,
+            ..
+        }
+    )
+}
+
 async fn place_journaled_maker<G: ExchangeGateway + ?Sized>(
     gateway: &G,
     store: &mut SqliteStore,
@@ -418,4 +436,34 @@ fn make_entry_order(
 fn ms_to_dt(ms: i64) -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms).saturating_mul(1_000_000))
         .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_rejected_and_not_found_are_benign_others_are_not() {
+        let rej = |kind, code| GatewayError::ExchangeRejected {
+            status: 400,
+            code,
+            kind,
+            message: String::new(),
+        };
+        assert!(cancel_error_is_benign(&rej(
+            ExchangeErrorKind::CancelRejected,
+            -2011
+        )));
+        assert!(cancel_error_is_benign(&rej(
+            ExchangeErrorKind::OrderNotFound,
+            -2013
+        )));
+        assert!(!cancel_error_is_benign(&rej(
+            ExchangeErrorKind::TooManyRequests,
+            -1003
+        )));
+        assert!(!cancel_error_is_benign(&GatewayError::InvalidRequest(
+            "x".into()
+        )));
+    }
 }
