@@ -1,4 +1,11 @@
 <script lang="ts">
+	import '@fontsource/manrope/400.css';
+	import '@fontsource/manrope/500.css';
+	import '@fontsource/manrope/600.css';
+	import '@fontsource/manrope/700.css';
+	import '@fontsource/inter/400.css';
+	import '@fontsource/inter/500.css';
+	import '@fontsource/inter/600.css';
 	import '../app.css';
 	import { onMount, type Snippet } from 'svelte';
 	import { page } from '$app/state';
@@ -6,10 +13,10 @@
 	import type { Venue } from '$lib/api/types';
 	import AuthGate from '$lib/components/AuthGate.svelte';
 	import ModeBanner from '$lib/components/ModeBanner.svelte';
+	import SidebarNav from '$lib/components/SidebarNav.svelte';
 	import VenueSwitchDialog, {
 		type SwitchPolicyOption
 	} from '$lib/components/VenueSwitchDialog.svelte';
-	import VenueSwitcher from '$lib/components/VenueSwitcher.svelte';
 
 	interface Props {
 		children: Snippet;
@@ -17,21 +24,10 @@
 
 	let { children }: Props = $props();
 
-	const navItems = [
-		{ href: '/', label: 'Cockpit' },
-		{ href: '/positions', label: 'Positions' },
-		{ href: '/signals', label: 'Signals' },
-		{ href: '/market', label: 'Market' },
-		{ href: '/risk', label: 'Risk' },
-		{ href: '/performance', label: 'Performance' },
-		{ href: '/logs', label: 'Logs' },
-		{ href: '/settings', label: 'Settings' },
-		{ href: '/system', label: 'System' }
-	];
-
 	let actionFeedback = $state<string | null>(null);
 	let switchDialogOpen = $state(false);
 	let switchTarget = $state<Venue>('futures');
+	let mobileMenuOpen = $state(false);
 
 	onMount(() => {
 		void botStream.restoreFromSession();
@@ -51,6 +47,7 @@
 		if (target === active) return;
 		switchTarget = target;
 		switchDialogOpen = true;
+		mobileMenuOpen = false;
 	}
 
 	async function handleConfirmSwitch(policy: SwitchPolicyOption): Promise<void> {
@@ -80,7 +77,17 @@
 	/>
 {:else}
 	{@const snap = botStream.snapshot}
-	<div class="flex min-h-screen flex-col bg-slate-950 text-slate-100">
+	{@const drainingVenue =
+		snap?.venues.spot === 'Draining'
+			? 'Spot'
+			: snap?.venues.futures === 'Draining'
+				? 'Futures'
+				: null}
+	{@const drainingCount = snap
+		? snap.positions.filter((p) => p.venue !== snap.venues.active).length
+		: 0}
+
+	<div class="flex min-h-screen flex-col bg-canvas text-ink">
 		<ModeBanner
 			buildMode={snap?.engine.build_mode ?? botStream.hello?.build_mode ?? 'paper'}
 			venue={snap?.venues.active ?? 'spot'}
@@ -97,34 +104,49 @@
 			onPanic={handlePanic}
 			onToggleControls={handleToggleControls}
 			onDisconnect={() => botStream.disconnect()}
+			onToggleMenu={() => (mobileMenuOpen = !mobileMenuOpen)}
 		/>
 
-		<nav class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/60 px-3 py-1.5">
-			<div class="flex gap-1 overflow-x-auto">
-				{#each navItems as item (item.href)}
-					{@const active = page.url.pathname === item.href}
-					<a
-						href={item.href}
-						class={`rounded-md px-3 py-1 text-xs font-semibold whitespace-nowrap transition ${
-							active
-								? 'bg-sky-600/25 text-sky-300 ring-1 ring-sky-500/50'
-								: 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-						}`}
-					>
-						{item.label}
-					</a>
-				{/each}
-			</div>
+		<div class="flex flex-1">
+			<SidebarNav
+				currentPath={page.url.pathname}
+				venues={snap?.venues ?? null}
+				canMutate={botStream.canMutate}
+				drainingOpenPositions={drainingCount}
+				open={mobileMenuOpen}
+				onClose={() => (mobileMenuOpen = false)}
+				onRequestSwitch={handleRequestSwitch}
+			/>
 
-			{#if snap}
-				<VenueSwitcher
-					venues={snap.venues}
-					readOnly={!botStream.canMutate}
-					drainingOpenPositions={snap.positions.filter((p) => p.venue !== snap.venues.active).length}
-					onRequestSwitch={handleRequestSwitch}
-				/>
-			{/if}
-		</nav>
+			<div class="flex min-w-0 flex-1 flex-col">
+				{#if drainingVenue}
+					<div
+						role="status"
+						data-testid="global-draining-banner"
+						class="border-b border-warning/40 bg-warning/10 px-4 py-2 font-mono text-xs text-warning"
+					>
+						⏳ {drainingVenue} sedang draining: {drainingCount} posisi dikelola, tidak ada entry baru
+					</div>
+				{/if}
+
+				{#if actionFeedback}
+					<div class="flex items-center justify-between border-b border-warning/40 bg-warning/10 px-4 py-2 font-mono text-xs text-warning">
+						<span>{actionFeedback}</span>
+						<button
+							type="button"
+							onclick={() => (actionFeedback = null)}
+							class="rounded border border-warning/40 px-2 py-0.5 text-[11px] text-warning hover:bg-warning/20"
+						>
+							Dismiss
+						</button>
+					</div>
+				{/if}
+
+				<main class="mx-auto w-full max-w-[1680px] flex-1 p-4 lg:p-6">
+					{@render children()}
+				</main>
+			</div>
+		</div>
 
 		{#if snap}
 			<VenueSwitchDialog
@@ -137,18 +159,5 @@
 				onCancel={() => (switchDialogOpen = false)}
 			/>
 		{/if}
-
-		{#if actionFeedback}
-			<div class="flex items-center justify-between border-b border-amber-800/60 bg-amber-950/40 px-4 py-1.5 text-xs text-amber-200">
-				<span>{actionFeedback}</span>
-				<button type="button" onclick={() => (actionFeedback = null)} class="text-amber-400 hover:text-white">
-					Dismiss
-				</button>
-			</div>
-		{/if}
-
-		<main class="mx-auto w-full max-w-[1600px] flex-1 p-4">
-			{@render children()}
-		</main>
 	</div>
 {/if}
