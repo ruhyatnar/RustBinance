@@ -93,6 +93,26 @@ pub fn check_cost_gate(
     }
 }
 
+fn check_btc_regime(ctx: &StrategyCtx, direction: Direction) -> GateLog {
+    let is_btc = ctx.symbol.as_str().eq_ignore_ascii_case("BTCUSDT");
+    match direction {
+        Direction::Long if is_btc || ctx.btc_long_regime_ok => {
+            GateLog::pass("btc_regime", "BTC 4h regime & crash guard OK")
+        }
+        Direction::Long => GateLog::fail(
+            "btc_regime",
+            "BTC 4h close <= EMA50 or BTC Crash Guard active",
+        ),
+        Direction::Short if is_btc || !ctx.btc_long_regime_ok => {
+            GateLog::pass("btc_regime", "BTC 4h bearish regime OK for Short")
+        }
+        Direction::Short => GateLog::fail(
+            "btc_regime",
+            "BTC 4h regime is bullish (blocks altcoin Short)",
+        ),
+    }
+}
+
 /// Evaluate all §6.5 signal quality gates and return `(all_passed, size_mult, gate_logs)`.
 #[must_use]
 pub fn evaluate_quality_gates(
@@ -150,19 +170,8 @@ pub fn evaluate_quality_gates(
         ));
     }
 
-    // 3. BTC regime (§6.5 #4) — required for altcoin Longs (BTCUSDT itself is exempt from altcoin check).
-    let is_btc = ctx.symbol.as_str().eq_ignore_ascii_case("BTCUSDT");
-    if is_btc || ctx.btc_long_regime_ok {
-        logs.push(GateLog::pass(
-            "btc_regime",
-            "BTC 4h regime & crash guard OK",
-        ));
-    } else {
-        logs.push(GateLog::fail(
-            "btc_regime",
-            "BTC 4h close <= EMA50 or BTC Crash Guard active",
-        ));
-    }
+    // 3. BTC regime (§6.5 #4 & §6.4.1) — BTCUSDT itself is exempt from altcoin regime check.
+    logs.push(check_btc_regime(ctx, direction));
 
     // 4. Single position per symbol & 4-bar cooldown (§6.5 #6)
     let cooldown_ok = ctx

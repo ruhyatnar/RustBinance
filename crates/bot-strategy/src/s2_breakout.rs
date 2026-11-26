@@ -17,6 +17,11 @@ pub const S2_RSI_MIN: f64 = 52.0;
 /// S2 RSI upper bound (§6.4: RSI in [52, 75]).
 pub const S2_RSI_MAX: f64 = 75.0;
 
+/// S2 RSI lower bound for Short mirror (§6.4.1: RSI in [25, 48]).
+pub const S2_SHORT_RSI_MIN: f64 = 100.0 - S2_RSI_MAX;
+/// S2 RSI upper bound for Short mirror (§6.4.1: RSI in [25, 48]).
+pub const S2_SHORT_RSI_MAX: f64 = 100.0 - S2_RSI_MIN;
+
 /// S2 Donchian Breakout strategy (Long profile for Spot/M08, §6.4).
 #[derive(Debug, Clone)]
 pub struct S2Breakout {
@@ -55,14 +60,41 @@ impl S2Breakout {
         self
     }
 
-    fn evaluate_short(ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
-        let (Some(dc_lower), Some(dc_mid), Some(rsi), Some(atr), Some(vol_sma20)) = (
+    #[allow(clippy::too_many_lines)]
+    fn evaluate_short(&self, ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
+        // 1. HTF aligned bearish
+        let htf_bearish =
+            ctx.htf.ready && ctx.htf.close < ctx.htf.ema50 && ctx.htf.ema50_falling_3bars;
+        if htf_bearish {
+            logs.push(GateLog::pass("htf_regime", "HTF 4h bearish and falling"));
+        } else {
+            logs.push(GateLog::fail("htf_regime", "HTF 4h not bearish"));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let (
+            Some(dc_lower),
+            Some(dc_mid),
+            Some(ema21),
+            Some(rsi),
+            Some(atr),
+            Some(adx),
+            Some(prev_adx),
+            Some(vol_sma20),
+        ) = (
             ctx.indicators.donchian_lower,
             ctx.indicators.donchian_mid,
+            ctx.indicators.ema21,
             ctx.indicators.rsi14,
             ctx.indicators.atr14,
+            ctx.indicators.adx14,
+            ctx.indicators.prev_adx14,
             ctx.indicators.vol_sma20,
-        ) else {
+        )
+        else {
             logs.push(GateLog::fail("warmup", "S2 Short indicators warming up"));
             return SignalDecision {
                 intent: None,
@@ -70,17 +102,64 @@ impl S2Breakout {
             };
         };
 
+        if atr <= 0.0 || vol_sma20 <= 0.0 {
+            logs.push(GateLog::fail("indicators_positive", "ATR or VolSMA20 <= 0"));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
         let close = ctx.bar.close;
-        let vol = ctx.bar.volume;
-        if atr <= 0.0
-            || vol_sma20 <= 0.0
-            || close >= dc_lower
-            || vol < 1.5 * vol_sma20
-            || !(25.0..=48.0).contains(&rsi)
+
+        // 2. Breakdown: close < Donchian(20).lower (strictly previous 20 bars)
+        if close < dc_lower {
+            logs.push(GateLog::pass(
+                "donchian_breakout",
+                format!("close {close:.4} < Donchian.lower {dc_lower:.4}"),
+            ));
+        } else {
+            logs.push(GateLog::fail(
+                "donchian_breakout",
+                format!("close {close:.4} >= Donchian.lower {dc_lower:.4}"),
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        // 3. Volume: vol >= min_volume_mult * VolSMA20 (default 1.5x)
+        let vol_mult = self.config.min_volume_mult.to_f64().unwrap_or(1.5);
+        if ctx.bar.volume >= vol_mult * vol_sma20 {
+            logs.push(GateLog::pass(
+                "volume",
+                format!("vol {:.2} >= {vol_mult:.2}x SMA20", ctx.bar.volume),
+            ));
+        } else {
+            logs.push(GateLog::fail(
+                "volume",
+                format!("vol {:.2} < {vol_mult:.2}x SMA20", ctx.bar.volume),
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        // 4. ADX >= 18 and rising; RSI in [25, 48]
+        if adx >= S2_MIN_ADX
+            && adx > prev_adx
+            && (S2_SHORT_RSI_MIN..=S2_SHORT_RSI_MAX).contains(&rsi)
         {
+            logs.push(GateLog::pass(
+                "momentum",
+                format!("ADX {adx:.2} > {prev_adx:.2}, RSI {rsi:.2} in [25,48]"),
+            ));
+        } else {
             logs.push(GateLog::fail(
-                "s2_short_rules",
-                "S2 Short breakdown conditions not met",
+                "momentum",
+                format!("ADX={adx:.2} (prev {prev_adx:.2}), RSI={rsi:.2}"),
             ));
             return SignalDecision {
                 intent: None,
@@ -88,26 +167,31 @@ impl S2Breakout {
             };
         }
 
-        let stop_f = dc_mid.max(close + 1.5 * atr);
-        let r_dist = stop_f - close;
-        if r_dist <= 0.0 {
+        // 5. Anti-overextension mirror: EMA21 - close <= 2.5 * ATR
+        if (ema21 - close) <= 2.5 * atr {
+            logs.push(GateLog::pass(
+                "anti_overextension",
+                "EMA21 - close <= 2.5*ATR",
+            ));
+        } else {
             logs.push(GateLog::fail(
-                "stop_distance",
-                "non-positive Short R distance",
+                "anti_overextension",
+                "EMA21 - close > 2.5*ATR",
             ));
             return SignalDecision {
                 intent: None,
                 gate_logs: logs,
             };
         }
-        let tp1_f = close - 1.5 * r_dist;
-        let tp2_f = close - 3.0 * r_dist;
 
-        let (Some(entry_dec), Some(stop_dec), Some(tp1_dec), Some(tp2_dec), Some(atr_dec)) = (
+        // 6. Stop mirror: closer of Donchian mid or entry + 2*ATR, but at least 1*ATR away (§6.4.1).
+        let atr2_stop = close + 2.0 * atr;
+        let min_stop = close + atr;
+        let stop_f64 = dc_mid.min(atr2_stop).max(min_stop);
+
+        let (Some(entry_d), Some(stop_d), Some(atr_d)) = (
             f64_to_decimal(close),
-            f64_to_decimal(stop_f),
-            f64_to_decimal(tp1_f),
-            f64_to_decimal(tp2_f),
+            f64_to_decimal(stop_f64),
             f64_to_decimal(atr),
         ) else {
             logs.push(GateLog::fail(
@@ -120,22 +204,73 @@ impl S2Breakout {
             };
         };
 
-        logs.push(GateLog::pass("s2_short_rules", "S2 Short breakdown passed"));
+        if entry_d <= Decimal::ZERO || stop_d <= entry_d {
+            logs.push(GateLog::fail(
+                "stop_geometry",
+                "invalid Short stop <= entry or entry <= 0",
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let r_dist = stop_d - entry_d;
+        let tp1_d = entry_d.saturating_sub(r_dist.saturating_mul(self.tp1_r));
+        let tp2_d = entry_d.saturating_sub(r_dist.saturating_mul(self.tp2_r));
+
+        if tp1_d <= Decimal::ZERO || tp2_d <= Decimal::ZERO {
+            logs.push(GateLog::fail(
+                "target_geometry",
+                format!("non-positive Short target: tp1={tp1_d}, tp2={tp2_d}"),
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let entry_ref = Price(entry_d);
+        let tp1 = Price(tp1_d);
+
+        // §6.5 Shared Quality Gates
+        let (quality_ok, size_mult, mut q_logs) = evaluate_quality_gates(
+            ctx,
+            entry_ref,
+            tp1,
+            Direction::Short,
+            self.cost_multiple,
+            self.max_spread_bps,
+            self.cooldown_bars,
+        );
+        logs.append(&mut q_logs);
+
+        if !quality_ok {
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let intent = StrategyEntryIntent {
+            venue: ctx.venue,
+            symbol: ctx.symbol.clone(),
+            direction: Direction::Short,
+            entry_ref,
+            stop: Price(stop_d),
+            tp1,
+            tp2: Some(Price(tp2_d)),
+            atr: atr_d,
+            size_mult,
+            strategy: StrategyId::Breakout,
+            rationale: format!(
+                "S2 Breakout Short: close {close:.4} < Donchian {dc_lower:.4}, ADX {adx:.1} rising, RSI {rsi:.1}"
+            ),
+            gate_logs: logs.clone(),
+        };
+
         SignalDecision {
-            intent: Some(StrategyEntryIntent {
-                venue: ctx.venue,
-                symbol: ctx.symbol.clone(),
-                direction: Direction::Short,
-                entry_ref: Price(entry_dec),
-                stop: Price(stop_dec),
-                tp1: Price(tp1_dec),
-                tp2: Some(Price(tp2_dec)),
-                atr: atr_dec,
-                size_mult: Decimal::ONE,
-                strategy: StrategyId::Breakout,
-                rationale: "S2 Short Donchian(20) lower breakdown".to_owned(),
-                gate_logs: logs.clone(),
-            }),
+            intent: Some(intent),
             gate_logs: logs,
         }
     }
@@ -170,7 +305,7 @@ impl Strategy for S2Breakout {
             && ctx.htf.ema50_falling_3bars
             && self.supports(&ctx.venue_caps, Direction::Short)
         {
-            return Self::evaluate_short(ctx, logs);
+            return self.evaluate_short(ctx, logs);
         }
 
         if !self.supports(&ctx.venue_caps, Direction::Long) {

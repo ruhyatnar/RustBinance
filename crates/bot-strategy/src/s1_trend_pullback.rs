@@ -50,7 +50,8 @@ impl S1TrendPullback {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn evaluate_short(ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
+    fn evaluate_short(&self, ctx: &StrategyCtx, mut logs: Vec<GateLog>) -> SignalDecision {
+        // 1. HTF 4h closed regime: close < EMA50 and EMA50 falling for 3 bars.
         let htf_bearish =
             ctx.htf.ready && ctx.htf.close < ctx.htf.ema50 && ctx.htf.ema50_falling_3bars;
         if !htf_bearish {
@@ -71,7 +72,9 @@ impl S1TrendPullback {
             ),
         ));
 
+        // Unpack required warm-up indicators.
         let (
+            Some(ema9),
             Some(ema21),
             Some(ema55),
             Some(ema200),
@@ -81,9 +84,11 @@ impl S1TrendPullback {
             Some(adx),
             Some(plus_di),
             Some(minus_di),
+            Some(vol_sma20),
             Some(max_high_3),
             Some(max_high_5),
         ) = (
+            ctx.indicators.ema9,
             ctx.indicators.ema21,
             ctx.indicators.ema55,
             ctx.indicators.ema200,
@@ -93,6 +98,7 @@ impl S1TrendPullback {
             ctx.indicators.adx14,
             ctx.indicators.plus_di,
             ctx.indicators.minus_di,
+            ctx.indicators.vol_sma20,
             ctx.indicators.max_high_3,
             ctx.indicators.max_high_5,
         )
@@ -104,17 +110,26 @@ impl S1TrendPullback {
             };
         };
 
+        if atr <= 0.0 || vol_sma20 <= 0.0 {
+            logs.push(GateLog::fail("indicators_positive", "ATR or VolSMA20 <= 0"));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
         let close = ctx.bar.close;
-        if atr <= 0.0
-            || !(ema21 < ema55 && close < ema200)
-            || !(max_high_3 >= ema21 - 0.1 * atr && close < ema21)
-            || !((38.0..=60.0).contains(&rsi) && rsi < prev_rsi)
-            || !(adx >= 20.0 && minus_di > plus_di)
-            || (close - ema21).abs() > 1.5 * atr
-        {
+
+        // 2. 1h trend: EMA21 < EMA55 and close < EMA200
+        if ema21 < ema55 && close < ema200 {
+            logs.push(GateLog::pass(
+                "trend_1h",
+                format!("EMA21 {ema21:.4} < EMA55 {ema55:.4} & close < EMA200 {ema200:.4}"),
+            ));
+        } else {
             logs.push(GateLog::fail(
-                "s1_short_rules",
-                "S1 Short mirror conditions not met",
+                "trend_1h",
+                "1h bearish trend alignment failed (EMA21 >= EMA55 or close >= EMA200)",
             ));
             return SignalDecision {
                 intent: None,
@@ -122,26 +137,116 @@ impl S1TrendPullback {
             };
         }
 
-        let stop_f = max_high_5.max(close + 1.5 * atr) + 0.1 * atr;
-        let r_dist = stop_f - close;
-        if r_dist <= 0.0 {
+        // 3. Pullback mirror: in last 3 bars high >= EMA21 - 0.1*ATR, close < EMA21, close >= EMA9 - 0.5*ATR
+        let touched_pullback = max_high_3 >= ema21 - 0.1 * atr;
+        let rejected_ema21 = close < ema21;
+        let not_extended_ema9 = close >= ema9 - 0.5 * atr;
+        if touched_pullback && rejected_ema21 && not_extended_ema9 {
+            logs.push(GateLog::pass(
+                "pullback",
+                format!("max_high_3={max_high_3:.4}, close={close:.4} rejected EMA21"),
+            ));
+        } else {
             logs.push(GateLog::fail(
-                "stop_distance",
-                "non-positive Short R distance",
+                "pullback",
+                format!(
+                    "touched={touched_pullback}, rejected={rejected_ema21}, not_ext_ema9={not_extended_ema9}"
+                ),
             ));
             return SignalDecision {
                 intent: None,
                 gate_logs: logs,
             };
         }
-        let tp1_f = close - 1.5 * r_dist;
-        let tp2_f = close - 3.0 * r_dist;
 
-        let (Some(entry_dec), Some(stop_dec), Some(tp1_dec), Some(tp2_dec), Some(atr_dec)) = (
+        // 4. Momentum mirror: RSI in [100 - rsi_max, 100 - rsi_min] & RSI < prev_RSI; ADX >= adx_min & -DI > +DI
+        let long_rsi_min = self.config.rsi_min.to_f64().unwrap_or(40.0);
+        let long_rsi_max = self.config.rsi_max.to_f64().unwrap_or(62.0);
+        let rsi_min = (100.0 - long_rsi_max).max(0.0);
+        let rsi_max = (100.0 - long_rsi_min).min(100.0);
+        let adx_min = self.config.adx_min.to_f64().unwrap_or(20.0);
+        let momentum_ok = rsi >= rsi_min
+            && rsi <= rsi_max
+            && rsi < prev_rsi
+            && adx >= adx_min
+            && minus_di > plus_di;
+        if momentum_ok {
+            logs.push(GateLog::pass(
+                "momentum",
+                format!("RSI {rsi:.2} < {prev_rsi:.2}, ADX {adx:.2}, -DI > +DI"),
+            ));
+        } else {
+            logs.push(GateLog::fail(
+                "momentum",
+                format!(
+                    "RSI={rsi:.2} (prev {prev_rsi:.2}), ADX={adx:.2}, +DI={plus_di:.2}, -DI={minus_di:.2}"
+                ),
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        // 5. Volume: vol >= 0.8 * VolSMA20
+        if ctx.bar.volume >= 0.8 * vol_sma20 {
+            logs.push(GateLog::pass(
+                "volume",
+                format!("vol {:.2} >= 0.8x SMA20 ({vol_sma20:.2})", ctx.bar.volume),
+            ));
+        } else {
+            logs.push(GateLog::fail(
+                "volume",
+                format!("vol {:.2} < 0.8x SMA20 ({vol_sma20:.2})", ctx.bar.volume),
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        // 6. Anti-overextension: |close - EMA21| <= 1.5 * ATR
+        if (close - ema21).abs() <= 1.5 * atr {
+            logs.push(GateLog::pass(
+                "anti_overextension",
+                "|close - EMA21| <= 1.5*ATR",
+            ));
+        } else {
+            logs.push(GateLog::fail(
+                "anti_overextension",
+                "|close - EMA21| > 1.5*ATR",
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        // 7. Optional OBI soft filter mirror: OBI_smooth <= -obi_min
+        if self.require_obi_filter {
+            if ctx.obi_smooth.is_some_and(|v| v <= -self.obi_min) {
+                logs.push(GateLog::pass(
+                    "obi_soft_filter",
+                    format!("OBI_smooth <= -{}", self.obi_min),
+                ));
+            } else {
+                logs.push(GateLog::fail(
+                    "obi_soft_filter",
+                    format!("OBI_smooth {:?} > -{}", ctx.obi_smooth, self.obi_min),
+                ));
+                return SignalDecision {
+                    intent: None,
+                    gate_logs: logs,
+                };
+            }
+        }
+
+        // Compute stop & targets in exact Decimal (§6.4.1):
+        // stop = max(max_high_5, entry + 1.5 * ATR) + 0.1 * ATR; TP1 = entry - tp1_r*R, TP2 = entry - tp2_r*R.
+        let stop_f64 = max_high_5.max(close + 1.5 * atr) + 0.1 * atr;
+        let (Some(entry_d), Some(stop_d), Some(atr_d)) = (
             f64_to_decimal(close),
-            f64_to_decimal(stop_f),
-            f64_to_decimal(tp1_f),
-            f64_to_decimal(tp2_f),
+            f64_to_decimal(stop_f64),
             f64_to_decimal(atr),
         ) else {
             logs.push(GateLog::fail(
@@ -154,25 +259,73 @@ impl S1TrendPullback {
             };
         };
 
-        logs.push(GateLog::pass(
-            "s1_short_rules",
-            "S1 Short mirror rules passed",
-        ));
+        if entry_d <= Decimal::ZERO || stop_d <= entry_d {
+            logs.push(GateLog::fail(
+                "stop_geometry",
+                "invalid Short stop <= entry or entry <= 0",
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let r_dist = stop_d - entry_d;
+        let tp1_d = entry_d.saturating_sub(r_dist.saturating_mul(self.config.tp1_r));
+        let tp2_d = entry_d.saturating_sub(r_dist.saturating_mul(self.config.tp2_r));
+
+        if tp1_d <= Decimal::ZERO || tp2_d <= Decimal::ZERO {
+            logs.push(GateLog::fail(
+                "target_geometry",
+                format!("non-positive Short target: tp1={tp1_d}, tp2={tp2_d}"),
+            ));
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let entry_ref = Price(entry_d);
+        let tp1 = Price(tp1_d);
+
+        // §6.5 Shared Quality Gates (cost gate, spread, freshness, BTC regime, cooldown, vol targeting)
+        let (quality_ok, size_mult, mut q_logs) = evaluate_quality_gates(
+            ctx,
+            entry_ref,
+            tp1,
+            Direction::Short,
+            self.config.cost_multiple,
+            self.max_spread_bps,
+            self.cooldown_bars,
+        );
+        logs.append(&mut q_logs);
+
+        if !quality_ok {
+            return SignalDecision {
+                intent: None,
+                gate_logs: logs,
+            };
+        }
+
+        let intent = StrategyEntryIntent {
+            venue: ctx.venue,
+            symbol: ctx.symbol.clone(),
+            direction: Direction::Short,
+            entry_ref,
+            stop: Price(stop_d),
+            tp1,
+            tp2: Some(Price(tp2_d)),
+            atr: atr_d,
+            size_mult,
+            strategy: StrategyId::TrendPullback,
+            rationale: format!(
+                "S1 Trend-Pullback Short: 4h bearish, 1h EMA21<EMA55, RSI {rsi:.1} falling, ADX {adx:.1}"
+            ),
+            gate_logs: logs.clone(),
+        };
+
         SignalDecision {
-            intent: Some(StrategyEntryIntent {
-                venue: ctx.venue,
-                symbol: ctx.symbol.clone(),
-                direction: Direction::Short,
-                entry_ref: Price(entry_dec),
-                stop: Price(stop_dec),
-                tp1: Price(tp1_dec),
-                tp2: Some(Price(tp2_dec)),
-                atr: atr_dec,
-                size_mult: Decimal::ONE,
-                strategy: StrategyId::TrendPullback,
-                rationale: "S1 Short mirror pullback below EMA21".to_owned(),
-                gate_logs: logs.clone(),
-            }),
+            intent: Some(intent),
             gate_logs: logs,
         }
     }
@@ -208,7 +361,7 @@ impl Strategy for S1TrendPullback {
             && ctx.htf.ema50_falling_3bars
             && self.supports(&ctx.venue_caps, Direction::Short)
         {
-            return Self::evaluate_short(ctx, logs);
+            return self.evaluate_short(ctx, logs);
         }
 
         if !self.supports(&ctx.venue_caps, Direction::Long) {
