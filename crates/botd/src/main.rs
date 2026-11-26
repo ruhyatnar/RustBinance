@@ -2,6 +2,7 @@
 //! Binance Rust trading daemon (`binance-botd`, headless engine).
 
 mod ipc_backend;
+mod lock;
 mod logging;
 mod sd_notify;
 
@@ -27,6 +28,7 @@ use bot_ipc::{
 use bot_store::SqliteStore;
 use bot_types::{TradingMode, Venue};
 use ipc_backend::{EngineIpcBackend, spawn_telemetry_bridge};
+use lock::ProcessLock;
 use rust_decimal::Decimal;
 use time::OffsetDateTime;
 use tokio::sync::{Mutex, mpsc};
@@ -342,6 +344,20 @@ async fn maybe_start_http_server(
     }
 }
 
+/// Build the single-instance lock file path beside the SQLite database.
+fn lock_file_path(db_path: &Path, mode: TradingMode) -> PathBuf {
+    let mode_str = match mode {
+        TradingMode::Paper => "paper",
+        TradingMode::Testnet => "testnet",
+        TradingMode::Live => "live",
+    };
+    let file_name = format!("binance-botd.{mode_str}.lock");
+    match db_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(file_name),
+        _ => PathBuf::from(file_name),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn run_daemon(config_path: &Path) -> Result<()> {
     let cfg = load_from_paths(&ConfigSourcePaths {
@@ -353,6 +369,14 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     enforce_live_confirmation_guard(&cfg)?;
 
     let db_path = Path::new(&cfg.storage.db_path);
+    let lock_path = lock_file_path(db_path, cfg.general.mode);
+    let process_lock = ProcessLock::acquire(&lock_path).with_context(|| {
+        format!(
+            "failed to acquire process lock at {} (is another binance-botd running?)",
+            lock_path.display()
+        )
+    })?;
+
     if let Some(parent) = db_path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -432,6 +456,7 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         mode = ?cfg.general.mode,
         venue = %active_venue,
         uds_path = %uds_path.display(),
+        lock_path = %process_lock.path().display(),
         version = env!("CARGO_PKG_VERSION"),
         "binance-botd started"
     );
@@ -478,6 +503,7 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         canceled_entry_orders = canceled_entries,
         "binance-botd stopped cleanly"
     );
+    drop(process_lock);
     Ok(())
 }
 
@@ -556,5 +582,26 @@ mod tests {
         assert!(check_confirmation_file("spot", p).is_err());
         std::fs::write(&f, "I CONFIRM LIVE").expect("write");
         assert!(check_confirmation_file("spot", p).is_ok());
+    }
+
+    #[test]
+    fn lock_file_path_uses_db_parent_and_mode() {
+        let db = Path::new("/var/lib/binance-bot/state.sqlite");
+        assert_eq!(
+            lock_file_path(db, TradingMode::Paper),
+            PathBuf::from("/var/lib/binance-bot/binance-botd.paper.lock")
+        );
+        assert_eq!(
+            lock_file_path(db, TradingMode::Testnet),
+            PathBuf::from("/var/lib/binance-bot/binance-botd.testnet.lock")
+        );
+        assert_eq!(
+            lock_file_path(db, TradingMode::Live),
+            PathBuf::from("/var/lib/binance-bot/binance-botd.live.lock")
+        );
+        assert_eq!(
+            lock_file_path(Path::new("state.sqlite"), TradingMode::Paper),
+            PathBuf::from("binance-botd.paper.lock")
+        );
     }
 }
