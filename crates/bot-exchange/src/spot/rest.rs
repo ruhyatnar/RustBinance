@@ -1,6 +1,7 @@
 //! Spot REST client for clock synchronization (`GET /api/v3/time`) and `exchangeInfo` (§4.1).
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bot_types::{InstrumentRules, Symbol, Venue};
@@ -11,7 +12,7 @@ use serde::Deserialize;
 use crate::clock::ClockSyncState;
 use crate::error::GatewayError;
 use crate::gateway::ExchangeInfoSnapshot;
-use crate::rate_limit::RateLimitRule;
+use crate::rate_limit::{RateLimitRule, RateLimitTracker};
 
 /// Result of calling `GET /api/v3/time`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub struct SpotRestClient {
     base_url: String,
     http: Client,
     clock: ClockSyncState,
+    rate_limits: Arc<RateLimitTracker>,
 }
 
 impl SpotRestClient {
@@ -38,11 +40,23 @@ impl SpotRestClient {
     /// Testnet Spot REST base URL.
     pub const TESTNET_URL: &'static str = "https://testnet.binance.vision";
 
-    /// Create a new Spot REST client targeting `base_url`.
+    /// Create a new Spot REST client targeting `base_url` with an isolated [`RateLimitTracker`].
     ///
     /// # Errors
     /// Returns [`GatewayError::Http`] if the underlying HTTP client fails to initialize.
     pub fn new(base_url: impl Into<String>, timeout: Duration) -> Result<Self, GatewayError> {
+        Self::with_rate_limits(base_url, timeout, Arc::new(RateLimitTracker::new()))
+    }
+
+    /// Create a new Spot REST client sharing the given [`RateLimitTracker`].
+    ///
+    /// # Errors
+    /// Returns [`GatewayError::Http`] if the underlying HTTP client fails to initialize.
+    pub fn with_rate_limits(
+        base_url: impl Into<String>,
+        timeout: Duration,
+        rate_limits: Arc<RateLimitTracker>,
+    ) -> Result<Self, GatewayError> {
         let http = Client::builder()
             .timeout(timeout)
             .build()
@@ -51,6 +65,7 @@ impl SpotRestClient {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             http,
             clock: ClockSyncState::new(),
+            rate_limits,
         })
     }
 
@@ -58,6 +73,12 @@ impl SpotRestClient {
     #[must_use]
     pub const fn clock_state(&self) -> &ClockSyncState {
         &self.clock
+    }
+
+    /// Return the shared rate-limit tracker updated from HTTP response headers.
+    #[must_use]
+    pub const fn rate_limits(&self) -> &Arc<RateLimitTracker> {
+        &self.rate_limits
     }
 
     /// Query `GET /api/v3/ping` to test Spot REST connectivity.
@@ -72,7 +93,7 @@ impl SpotRestClient {
             .send()
             .await
             .map_err(|e| GatewayError::Http(e.to_string()))?;
-        let _body = check_rest_response(resp, now_unix_ms()).await?;
+        let _body = check_rest_response(resp, now_unix_ms(), &self.rate_limits).await?;
         Ok(())
     }
 
@@ -92,7 +113,7 @@ impl SpotRestClient {
         let t1 = now_unix_ms();
         let local_mid = t0.saturating_add(t1.saturating_sub(t0) / 2);
 
-        let body = check_rest_response(resp, local_mid).await?;
+        let body = check_rest_response(resp, local_mid, &self.rate_limits).await?;
         let parsed: RawServerTime =
             serde_json::from_str(&body).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
 
@@ -117,7 +138,7 @@ impl SpotRestClient {
             .send()
             .await
             .map_err(|e| GatewayError::Http(e.to_string()))?;
-        let body = check_rest_response(resp, now_unix_ms()).await?;
+        let body = check_rest_response(resp, now_unix_ms(), &self.rate_limits).await?;
         parse_spot_exchange_info(&body)
     }
 }
@@ -202,7 +223,11 @@ fn parse_dec(s: &str) -> Option<Decimal> {
     Decimal::from_str(s).ok()
 }
 
-async fn check_rest_response(resp: reqwest::Response, now_ms: i64) -> Result<String, GatewayError> {
+async fn check_rest_response(
+    resp: reqwest::Response,
+    now_ms: i64,
+    rate_limits: &RateLimitTracker,
+) -> Result<String, GatewayError> {
     let status = resp.status().as_u16();
     let retry_after_ms = resp
         .headers()
@@ -210,6 +235,16 @@ async fn check_rest_response(resp: reqwest::Response, now_ms: i64) -> Result<Str
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<i64>().ok())
         .map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)));
+    rate_limits.record_rest_headers(
+        resp.headers()
+            .iter()
+            .filter_map(|(name, val)| val.to_str().ok().map(|v| (name.as_str(), v))),
+    );
+    if matches!(status, 418 | 429)
+        && let Some(ra) = retry_after_ms
+    {
+        rate_limits.record_retry_after(ra, status == 418);
+    }
 
     let body = resp
         .text()
@@ -401,6 +436,69 @@ mod tests {
             client.clock_state().last_sync_ms(),
             Some(sync.local_time_ms)
         );
+
+        server.await.expect("server join");
+    }
+
+    #[tokio::test]
+    async fn spot_rest_ingests_rate_limit_headers_into_shared_tracker() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        use crate::rate_limit::{RateLimitBucketKey, RateLimitRule, RateLimitTracker};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await.expect("read");
+            let body = "{}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-MBX-USED-WEIGHT-1M: 120\r\nX-MBX-ORDER-COUNT-10S: 45\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.expect("write");
+        });
+
+        let tracker = Arc::new(RateLimitTracker::new());
+        tracker.apply_rules(&[RateLimitRule {
+            rate_limit_type: RateLimitType::Orders,
+            interval: RateLimitInterval::Second,
+            interval_num: 10,
+            limit: 50,
+        }]);
+        let client = super::SpotRestClient::with_rate_limits(
+            format!("http://{addr}"),
+            Duration::from_secs(2),
+            Arc::clone(&tracker),
+        )
+        .expect("client");
+
+        client.ping().await.expect("ping");
+        let snap = client.rate_limits().snapshot();
+        let weight = snap
+            .get(&RateLimitBucketKey {
+                rate_limit_type: RateLimitType::RequestWeight,
+                interval: RateLimitInterval::Minute,
+                interval_num: 1,
+            })
+            .expect("weight bucket");
+        assert_eq!(weight.count, 120);
+        let orders = snap
+            .get(&RateLimitBucketKey {
+                rate_limit_type: RateLimitType::Orders,
+                interval: RateLimitInterval::Second,
+                interval_num: 10,
+            })
+            .expect("orders bucket");
+        assert_eq!(orders.count, 45);
+        assert_eq!(orders.limit, 50);
+        assert!(tracker.can_place_order(1_000, 90).is_err());
 
         server.await.expect("server join");
     }

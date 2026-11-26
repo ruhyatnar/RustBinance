@@ -87,6 +87,58 @@ pub struct RateLimitBucketState {
     pub count: u64,
 }
 
+/// Error returned when placing an order would exceed or collide with client-side rate budget.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "rate budget exceeded for {:?} ({} * {:?}): count={} limit={}",
+    bucket.rate_limit_type,
+    bucket.interval_num,
+    bucket.interval,
+    count,
+    limit
+)]
+pub struct RateBudgetExceeded {
+    /// Rate-limit bucket that triggered the block (or `Unknown` for an active 429/418 cooldown).
+    pub bucket: RateLimitBucketKey,
+    /// Observed usage count (`0` when blocked by an active 429/418 cooldown).
+    pub count: u64,
+    /// Configured bucket ceiling (`0` when blocked by an active 429/418 cooldown).
+    pub limit: u64,
+}
+
+fn parse_rest_rate_limit_header(header_name: &str) -> Option<RateLimitBucketKey> {
+    let lower = header_name.trim().to_ascii_lowercase();
+    let (rate_limit_type, suffix) = if let Some(s) = lower.strip_prefix("x-mbx-used-weight-") {
+        (RateLimitType::RequestWeight, s)
+    } else {
+        let s = lower.strip_prefix("x-mbx-order-count-")?;
+        (RateLimitType::Orders, s)
+    };
+
+    let mut chars = suffix.chars();
+    let unit_char = chars.next_back()?;
+    let num_str = chars.as_str();
+    if num_str.is_empty() {
+        return None;
+    }
+    let interval_num: u32 = num_str.parse().ok()?;
+    if interval_num == 0 {
+        return None;
+    }
+    let interval = match unit_char {
+        's' => RateLimitInterval::Second,
+        'm' => RateLimitInterval::Minute,
+        'd' => RateLimitInterval::Day,
+        _ => return None,
+    };
+
+    Some(RateLimitBucketKey {
+        rate_limit_type,
+        interval,
+        interval_num,
+    })
+}
+
 #[derive(Debug, Default)]
 struct TrackerInner {
     buckets: HashMap<RateLimitBucketKey, RateLimitBucketState>,
@@ -197,6 +249,91 @@ impl RateLimitTracker {
             .lock()
             .map(|g| g.buckets.clone())
             .unwrap_or_default()
+    }
+
+    /// Record a single Binance REST rate-limit header (`x-mbx-used-weight-*` or
+    /// `x-mbx-order-count-*`), preserving any seeded `limit` (or `0` when unseeded).
+    pub fn record_rest_header(&self, header_name: &str, value: &str) {
+        self.record_rest_headers([(header_name, value)]);
+    }
+
+    /// Record a batch of Binance REST rate-limit headers from an HTTP response.
+    ///
+    /// Unrecognized header names and non-integer values are ignored cleanly.
+    pub fn record_rest_headers<'a, I>(&self, headers: I)
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        for (name, value) in headers {
+            let Some(key) = parse_rest_rate_limit_header(name) else {
+                continue;
+            };
+            let Ok(count) = value.trim().parse::<u64>() else {
+                continue;
+            };
+            guard
+                .buckets
+                .entry(key)
+                .and_modify(|s| s.count = count)
+                .or_insert(RateLimitBucketState { limit: 0, count });
+        }
+    }
+
+    /// Check whether a new order can be placed at `now_ms` without breaching `safety_margin_pct`
+    /// on any seeded `Orders` bucket or violating an active 429/418 cooldown.
+    ///
+    /// # Errors
+    /// Returns [`RateBudgetExceeded`] when an IP ban / `retryAfter` cooldown is active at
+    /// `now_ms`, or when any `Orders` bucket with `limit > 0` satisfies
+    /// `count * 100 >= limit * safety_margin_pct`.
+    pub fn can_place_order(
+        &self,
+        now_ms: i64,
+        safety_margin_pct: u8,
+    ) -> Result<(), RateBudgetExceeded> {
+        let Ok(guard) = self.inner.lock() else {
+            return Err(RateBudgetExceeded {
+                bucket: RateLimitBucketKey {
+                    rate_limit_type: RateLimitType::Unknown,
+                    interval: RateLimitInterval::Unknown,
+                    interval_num: 0,
+                },
+                count: 0,
+                limit: 0,
+            });
+        };
+
+        let cooldown_active = guard.retry_after_ms.is_some_and(|t| t > now_ms);
+        if cooldown_active {
+            return Err(RateBudgetExceeded {
+                bucket: RateLimitBucketKey {
+                    rate_limit_type: RateLimitType::Unknown,
+                    interval: RateLimitInterval::Unknown,
+                    interval_num: 0,
+                },
+                count: 0,
+                limit: 0,
+            });
+        }
+
+        let margin = u64::from(safety_margin_pct);
+        for (key, state) in &guard.buckets {
+            if key.rate_limit_type == RateLimitType::Orders
+                && state.limit > 0
+                && state.count.saturating_mul(100) >= state.limit.saturating_mul(margin)
+            {
+                return Err(RateBudgetExceeded {
+                    bucket: key.clone(),
+                    count: state.count,
+                    limit: state.limit,
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -324,5 +461,80 @@ mod tests {
 
         backoff.reset();
         assert_eq!(backoff.current_cap(), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn rest_headers_update_buckets_and_enforce_order_budget() {
+        let tracker = RateLimitTracker::new();
+        // Review Focus #2: headers before rules must not panic or block with limit=0.
+        tracker.record_rest_headers([
+            ("x-mbx-used-weight-1m", "120"),
+            ("x-mbx-order-count-10s", "45"),
+        ]);
+        assert!(tracker.can_place_order(10_000, 90).is_ok());
+
+        tracker.apply_rules(&[RateLimitRule {
+            rate_limit_type: RateLimitType::Orders,
+            interval: RateLimitInterval::Second,
+            interval_num: 10,
+            limit: 50,
+        }]);
+        // 45 / 50 == 90% -> blocked at 90% safety margin.
+        let err = tracker.can_place_order(10_000, 90).unwrap_err();
+        assert_eq!(err.count, 45);
+        assert_eq!(err.limit, 50);
+
+        // Lower count below threshold -> allowed.
+        tracker.record_rest_header("X-MBX-ORDER-COUNT-10S", "44");
+        assert!(tracker.can_place_order(10_000, 90).is_ok());
+    }
+
+    #[test]
+    fn rest_header_parser_handles_units_case_and_invalid_inputs() {
+        let tracker = RateLimitTracker::new();
+        tracker.record_rest_headers([
+            ("X-MBX-USED-WEIGHT-5M", "250"),
+            ("x-mbx-order-count-1d", "12"),
+            ("x-mbx-used-weight-0m", "99"),
+            ("x-mbx-used-weight-1x", "99"),
+            ("x-mbx-order-count-m", "99"),
+            ("x-mbx-used-weight-1m", "not_a_num"),
+            ("content-type", "application/json"),
+        ]);
+
+        let snap = tracker.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(
+            snap.get(&RateLimitBucketKey {
+                rate_limit_type: RateLimitType::RequestWeight,
+                interval: RateLimitInterval::Minute,
+                interval_num: 5,
+            })
+            .expect("5m weight")
+            .count,
+            250
+        );
+        assert_eq!(
+            snap.get(&RateLimitBucketKey {
+                rate_limit_type: RateLimitType::Orders,
+                interval: RateLimitInterval::Day,
+                interval_num: 1,
+            })
+            .expect("1d orders")
+            .count,
+            12
+        );
+    }
+
+    #[test]
+    fn can_place_order_blocks_during_retry_after_and_ip_ban() {
+        let tracker = RateLimitTracker::new();
+        tracker.record_retry_after(20_000, false);
+        assert!(tracker.can_place_order(19_999, 90).is_err());
+        assert!(tracker.can_place_order(20_000, 90).is_ok());
+
+        tracker.record_retry_after(30_000, true);
+        assert!(tracker.can_place_order(25_000, 90).is_err());
+        assert!(tracker.can_place_order(30_000, 90).is_ok());
     }
 }

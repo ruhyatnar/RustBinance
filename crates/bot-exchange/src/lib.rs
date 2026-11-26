@@ -24,8 +24,8 @@ pub use gateway::{
     validate_client_order_id,
 };
 pub use rate_limit::{
-    RateLimitBucketKey, RateLimitBucketState, RateLimitInterval, RateLimitReading, RateLimitRule,
-    RateLimitTracker, RateLimitType, ReconnectBackoff,
+    RateBudgetExceeded, RateLimitBucketKey, RateLimitBucketState, RateLimitInterval,
+    RateLimitReading, RateLimitRule, RateLimitTracker, RateLimitType, ReconnectBackoff,
 };
 pub use spot::{
     ServerTimeSync, SpotAdapter, SpotAdapterConfig, SpotRestClient, SpotSessionConfig,

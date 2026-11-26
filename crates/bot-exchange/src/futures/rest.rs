@@ -81,6 +81,12 @@ impl FuturesRestClient {
         &self.clock
     }
 
+    /// Return the shared rate-limit tracker updated from HTTP response headers.
+    #[must_use]
+    pub const fn rate_limits(&self) -> &Arc<RateLimitTracker> {
+        &self.rate_limits
+    }
+
     /// Query `GET /fapi/v1/ping` to test USDⓈ-M Futures REST connectivity.
     ///
     /// # Errors
@@ -346,20 +352,16 @@ impl FuturesRestClient {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<i64>().ok())
             .map(|secs| now.saturating_add(secs.saturating_mul(1000)));
-        if let Some(weight) = resp
-            .headers()
-            .get("x-mbx-used-weight-1m")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
+        self.rate_limits.record_rest_headers(
+            resp.headers()
+                .iter()
+                .filter_map(|(name, val)| val.to_str().ok().map(|v| (name.as_str(), v))),
+        );
+        if matches!(status.as_u16(), 418 | 429)
+            && let Some(ra) = retry_after_ms
         {
             self.rate_limits
-                .record_readings(&[crate::rate_limit::RateLimitReading {
-                    rate_limit_type: crate::rate_limit::RateLimitType::RequestWeight,
-                    interval: crate::rate_limit::RateLimitInterval::Minute,
-                    interval_num: 1,
-                    limit: 2400,
-                    count: weight,
-                }]);
+                .record_retry_after(ra, status.as_u16() == 418);
         }
         let body = resp
             .text()
@@ -735,6 +737,76 @@ mod tests {
             client.clock_state().last_sync_ms(),
             Some(sync.local_time_ms)
         );
+
+        server.await.expect("server join");
+    }
+
+    #[tokio::test]
+    async fn futures_rest_ingests_rate_limit_headers_preserving_seeded_limits() {
+        use crate::rate_limit::{
+            RateLimitBucketKey, RateLimitInterval, RateLimitRule, RateLimitType,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await.expect("read");
+            let body = "{}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-MBX-USED-WEIGHT-1M: 320\r\nX-MBX-ORDER-COUNT-10S: 18\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.expect("write");
+        });
+
+        let tracker = Arc::new(RateLimitTracker::new());
+        tracker.apply_rules(&[
+            RateLimitRule {
+                rate_limit_type: RateLimitType::RequestWeight,
+                interval: RateLimitInterval::Minute,
+                interval_num: 1,
+                limit: 2400,
+            },
+            RateLimitRule {
+                rate_limit_type: RateLimitType::Orders,
+                interval: RateLimitInterval::Second,
+                interval_num: 10,
+                limit: 20,
+            },
+        ]);
+        let client = FuturesRestClient::new(
+            format!("http://{addr}"),
+            Duration::from_secs(2),
+            None,
+            Arc::clone(&tracker),
+        )
+        .expect("client");
+
+        client.ping().await.expect("ping");
+        let snap = client.rate_limits().snapshot();
+        let weight = snap
+            .get(&RateLimitBucketKey {
+                rate_limit_type: RateLimitType::RequestWeight,
+                interval: RateLimitInterval::Minute,
+                interval_num: 1,
+            })
+            .expect("weight bucket");
+        assert_eq!(weight.count, 320);
+        assert_eq!(weight.limit, 2400);
+        let orders = snap
+            .get(&RateLimitBucketKey {
+                rate_limit_type: RateLimitType::Orders,
+                interval: RateLimitInterval::Second,
+                interval_num: 10,
+            })
+            .expect("orders bucket");
+        assert_eq!(orders.count, 18);
+        assert_eq!(orders.limit, 20);
+        assert!(tracker.can_place_order(1_000, 90).is_err());
 
         server.await.expect("server join");
     }
