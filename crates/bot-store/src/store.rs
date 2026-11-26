@@ -106,6 +106,21 @@ impl SqliteStore {
         }
     }
 
+    /// Lightweight active liveness probe executing `SELECT 1` against the SQLite connection.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if SQLite fails to execute the probe query.
+    pub fn ping(&self) -> Result<(), StoreError> {
+        let val: i64 = self.conn.query_row("SELECT 1", [], |row| row.get(0))?;
+        if val == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::Corruption(format!(
+                "unexpected ping result: {val}"
+            )))
+        }
+    }
+
     /// Append a versioned event to the append-only `journal` table and return its assigned `seq`.
     ///
     /// # Errors

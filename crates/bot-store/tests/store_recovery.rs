@@ -612,3 +612,9 @@ fn persisted_state_prunes_terminal_orders_closed_positions_and_caps_fills() {
     let recovered = store.recover_state().expect("recover");
     assert_eq!(recovered, state);
 }
+
+#[test]
+fn sqlite_store_ping_succeeds_on_open_db() {
+    let store = SqliteStore::open_in_memory().expect("open in-memory store");
+    assert!(store.ping().is_ok());
+}

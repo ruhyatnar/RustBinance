@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Binance Rust trading daemon (`binance-botd`, headless engine).
 
+mod health;
 mod ipc_backend;
 mod lock;
 mod logging;
@@ -420,10 +421,11 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     }
     let (engine_handle, engine_join) = actor.spawn(adapters.event_rx);
 
+    let shared_audit_store = Arc::new(Mutex::new(audit_store));
     let backend = Arc::new(EngineIpcBackend::new(cfg.clone(), engine_handle.clone()));
     let dispatcher = Arc::new(CommandDispatcher::new(
         backend,
-        Some(Arc::new(Mutex::new(audit_store))),
+        Some(Arc::clone(&shared_audit_store)),
         ConfirmNonceStore::default(),
     ));
     let hub = Arc::new(TelemetryHub::new(256));
@@ -432,6 +434,22 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         Arc::clone(&hub),
         cfg.general.mode,
     );
+
+    let exchange_pinger: Arc<dyn health::ExchangePinger> = match cfg.general.mode {
+        TradingMode::Paper => Arc::new(health::NoopExchangePinger),
+        TradingMode::Testnet | TradingMode::Live => Arc::new(
+            health::RestExchangePinger::from_config(&cfg, Duration::from_secs(5))
+                .context("failed to initialize REST health pinger")?,
+        ),
+    };
+    let (health_shutdown_tx, health_shutdown_rx) = tokio::sync::watch::channel(false);
+    let health_probe_task = health::HealthProbeRunner::new(
+        Arc::clone(&shared_audit_store),
+        exchange_pinger,
+        engine_handle.clone(),
+        health::DEFAULT_HEALTH_PROBE_INTERVAL,
+    )
+    .spawn(health_shutdown_rx);
 
     let uds_path = PathBuf::from(&cfg.ipc.uds_path);
     let uds_handle = tokio::spawn({
@@ -481,6 +499,8 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
 
     info!("shutdown signal received; canceling pending entry orders only (preserving protections)");
     let _ = sd_notify::notify_stopping();
+    let _ = health_shutdown_tx.send(true);
+    let _ = health_probe_task.await;
     if let Some(wd) = watchdog_task {
         wd.abort();
     }

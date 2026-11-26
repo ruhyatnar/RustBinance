@@ -111,6 +111,10 @@ impl Default for RuntimeHealth {
     }
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 /// Conflated telemetry snapshot published over `watch` (§3.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TelemetrySnapshot {
@@ -131,6 +135,12 @@ pub struct TelemetrySnapshot {
     pub equity_total_usd: Decimal,
     /// Highest applied journal sequence number.
     pub last_seq: i64,
+    /// Whether the engine is paused due to detected exchange maintenance.
+    #[serde(default)]
+    pub maintenance_paused: bool,
+    /// Whether the active SQLite health probe is healthy.
+    #[serde(default = "default_true")]
+    pub db_ok: bool,
 }
 
 /// Complete live snapshot returned by [`EngineHandle::full_snapshot`] for IPC/UI consumers.
@@ -320,6 +330,23 @@ pub enum EngineCommand {
         now_ms: i64,
         /// Reply channel.
         reply: oneshot::Sender<Result<VenueSwitchReport, String>>,
+    },
+    /// Set or clear exchange maintenance auto-pause state.
+    ///
+    /// - When `active == true`: transitions `Ready -> Paused` (never canceling open protections,
+    ///   never downgrading `Halted` or `Killed`) and sets `maintenance_paused = true`.
+    /// - When `active == false`: clears `maintenance_paused = false` while leaving `EngineMode::Paused`
+    ///   untouched until operator explicitly sends `Resume` (Opsi 1).
+    SetMaintenancePaused {
+        /// Whether exchange maintenance is currently active.
+        active: bool,
+        /// Human-readable probe detail.
+        reason: String,
+    },
+    /// Report the latest active SQLite health probe result (`SELECT 1`).
+    ReportDbHealth {
+        /// `true` when SQLite probe succeeded, `false` otherwise.
+        ok: bool,
     },
     /// Graceful shutdown (`SIGTERM`): cancel ONLY pending entry orders, preserve all protections!
     Shutdown {
@@ -551,6 +578,25 @@ impl EngineHandle {
         })?;
         rx.await.map_err(|_| EngineHandleError::Closed)
     }
+    /// Notify the engine of an exchange maintenance probe state change.
+    ///
+    /// # Errors
+    /// Returns [`EngineHandleError`] if the bounded command queue is full or actor closed.
+    pub fn set_maintenance_paused(
+        &self,
+        active: bool,
+        reason: String,
+    ) -> Result<(), EngineHandleError> {
+        self.try_send(EngineCommand::SetMaintenancePaused { active, reason })
+    }
+
+    /// Report the latest active SQLite health probe status to the engine.
+    ///
+    /// # Errors
+    /// Returns [`EngineHandleError`] if the bounded command queue is full or actor closed.
+    pub fn report_db_health(&self, ok: bool) -> Result<(), EngineHandleError> {
+        self.try_send(EngineCommand::ReportDbHealth { ok })
+    }
 }
 
 /// Single-writer trading Engine Actor (§3.2).
@@ -573,6 +619,8 @@ pub struct EngineActor {
     btc_guard: BtcCrashGuard,
     btc_spike_guard: BtcSpikeGuard,
     health: RuntimeHealth,
+    maintenance_paused: bool,
+    db_ok: bool,
     last_market_tick_ms: Option<i64>,
     last_switch_ms: i64,
     fsm: OrderFsm,
@@ -683,6 +731,8 @@ impl EngineActor {
             active_orders: state.orders.len(),
             equity_total_usd: counters.combined_equity(),
             last_seq: state.last_seq,
+            maintenance_paused: false,
+            db_ok: true,
         };
         let (telemetry_tx, _) = watch::channel(initial_tel);
 
@@ -705,6 +755,8 @@ impl EngineActor {
             btc_guard,
             btc_spike_guard,
             health: RuntimeHealth::default(),
+            maintenance_paused: false,
+            db_ok: true,
             last_market_tick_ms: None,
             last_switch_ms: 0,
             fsm,
@@ -901,6 +953,56 @@ impl EngineActor {
                 self.publish_telemetry();
                 let _ = reply.send(res);
             }
+            EngineCommand::SetMaintenancePaused { active, reason } => {
+                self.maintenance_paused = active;
+                if active {
+                    if self.mode_machine.mode() == EngineMode::Ready {
+                        let now_ms = unix_now_ms();
+                        let mode = self.mode_machine.apply(
+                            ModeTrigger::ManualPause {
+                                reason: format!("exchange maintenance: {reason}"),
+                            },
+                            now_ms,
+                        );
+                        let env = JournalEnvelope::new(JournalEvent::EngineModeChanged {
+                            mode,
+                            reason: self.mode_machine.reason().to_owned(),
+                        });
+                        if let Ok(seq) = self.store.append_event(now_ms, &env) {
+                            self.state.apply_event(seq, &env);
+                        }
+                        warn!(
+                            ?mode,
+                            reason = %reason,
+                            "exchange maintenance detected; engine auto-paused (exchange protections preserved)"
+                        );
+                    } else {
+                        warn!(
+                            mode = ?self.mode_machine.mode(),
+                            reason = %reason,
+                            "exchange maintenance detected; preserving current engine mode"
+                        );
+                    }
+                } else {
+                    info!(
+                        mode = ?self.mode_machine.mode(),
+                        reason = %reason,
+                        "exchange maintenance cleared; remaining in current mode until operator resume"
+                    );
+                }
+                self.publish_telemetry();
+            }
+            EngineCommand::ReportDbHealth { ok } => {
+                if self.db_ok != ok {
+                    if ok {
+                        info!("SQLite active health probe recovered");
+                    } else {
+                        warn!("SQLite active health probe reported unhealthy");
+                    }
+                }
+                self.db_ok = ok;
+                self.publish_telemetry();
+            }
             EngineCommand::Shutdown { now_ms, reply } => {
                 let canceled = self.perform_graceful_shutdown(now_ms).await;
                 self.publish_telemetry();
@@ -1018,6 +1120,8 @@ impl EngineActor {
                 active_orders: active_orders.len(),
                 equity_total_usd: self.counters.combined_equity(),
                 last_seq: self.state.last_seq,
+                maintenance_paused: self.maintenance_paused,
+                db_ok: self.db_ok,
             },
             started_at_ms: self.started_at_ms,
             last_switch_ms: self.last_switch_ms,
@@ -1056,6 +1160,8 @@ impl EngineActor {
             active_orders,
             equity_total_usd: self.counters.combined_equity(),
             last_seq: self.state.last_seq,
+            maintenance_paused: self.maintenance_paused,
+            db_ok: self.db_ok,
         });
     }
 

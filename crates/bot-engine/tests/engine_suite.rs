@@ -405,6 +405,8 @@ fn command_channel_backpressure_returns_busy_when_full() {
         active_orders: 0,
         equity_total_usd: Decimal::from(10_000_u32),
         last_seq: 0,
+        maintenance_paused: false,
+        db_ok: true,
     });
     // Fill all 64 slots without polling receiver.
     for _ in 0..COMMAND_CHANNEL_CAPACITY {
@@ -793,4 +795,174 @@ mod audit_regression_tests {
             "failed replace_runner_stop must NOT advance local stop_price"
         );
     }
+}
+
+#[tokio::test]
+async fn maintenance_pause_transitions_ready_to_paused_and_stays_paused_on_clear() {
+    let broker = Arc::new(PaperBroker::new(PaperBrokerConfig {
+        rules: vec![sample_rules("BTCUSDT")],
+        initial_quote_balance: Decimal::from(10_000_u32),
+        ..PaperBrokerConfig::default()
+    }));
+    broker.inject_orphan_balance("BTC", Decimal::from(2_u32));
+    broker.on_price_tick(
+        &Symbol("BTCUSDT".into()),
+        Price(Decimal::from(100_u32)),
+        Price(Decimal::from(101_u32)),
+        1_000,
+    );
+    broker.activate().await.expect("activate");
+    let event_rx = broker.take_event_rx().expect("event_rx");
+
+    let mut store = SqliteStore::open_in_memory().expect("store");
+    let pos_id = Uuid::from_u128(501);
+    let dt = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("dt");
+    let pos_env = JournalEnvelope::new(JournalEvent::PositionOpened {
+        position: Position {
+            id: pos_id,
+            symbol: Symbol("BTCUSDT".into()),
+            venue: Venue::Spot,
+            direction: Direction::Long,
+            strategy: StrategyId::TrendPullback,
+            entry_price: Price(Decimal::from(100_u32)),
+            qty_initial: Qty(Decimal::from(2_u32)),
+            qty_open: Qty(Decimal::from(2_u32)),
+            r_distance: Decimal::from(4_u32),
+            leverage: None,
+            liq_price: None,
+            stop_price: Price(Decimal::from(96_u32)),
+            tp1_price: Price(Decimal::from(106_u32)),
+            tp2_price: Some(Price(Decimal::from(112_u32))),
+            best_price: Price(Decimal::from(100_u32)),
+            tp1_done: false,
+            breakeven_done: false,
+            fees_paid_quote: Decimal::ZERO,
+            realized_pnl_quote: Decimal::ZERO,
+            state: PositionState::OpenProtected,
+            opened_at: dt,
+        },
+    });
+    store.append_event(1_000, &pos_env).expect("append");
+
+    let actor = EngineActor::bootstrap(
+        BotConfig::default(),
+        "b01".into(),
+        store,
+        broker.clone(),
+        Decimal::from(10_000_u32),
+        1_000,
+    )
+    .await
+    .expect("bootstrap");
+    let (handle, join) = actor.spawn(event_rx);
+
+    let initial_oco = broker.active_oco_count();
+    assert!(initial_oco >= 1, "expected active OCO protection");
+    assert_eq!(handle.telemetry().mode, EngineMode::Ready);
+    assert!(!handle.telemetry().maintenance_paused);
+    assert!(handle.telemetry().db_ok);
+
+    // 1. Ready + SetMaintenancePaused { active: true } -> Paused, maintenance_paused = true, OCO untouched.
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: true,
+            reason: "binance HTTP 503 maintenance".to_owned(),
+        })
+        .expect("send maintenance active");
+    let snap = handle.full_snapshot(2_000).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+    assert!(snap.telemetry.maintenance_paused);
+    assert_eq!(
+        broker.active_oco_count(),
+        initial_oco,
+        "maintenance auto-pause must NEVER cancel exchange-side OCO protections"
+    );
+
+    // 2. Clear maintenance -> stays Paused (Opsi 1), maintenance_paused = false.
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: false,
+            reason: "exchange ping ok".to_owned(),
+        })
+        .expect("send maintenance clear");
+    let snap = handle.full_snapshot(3_000).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+    assert!(!snap.telemetry.maintenance_paused);
+
+    // 3. Explicit operator Resume -> Ready.
+    let resumed = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::ManualResumeFromPause, 4_000)
+        .await
+        .expect("resume");
+    assert_eq!(resumed, EngineMode::Ready);
+
+    // 4. ReportDbHealth toggles db_ok in TelemetrySnapshot.
+    handle
+        .try_send(EngineCommand::ReportDbHealth { ok: false })
+        .expect("report db unhealthy");
+    let snap = handle.full_snapshot(4_500).await.expect("snap");
+    assert!(!snap.telemetry.db_ok);
+    handle
+        .try_send(EngineCommand::ReportDbHealth { ok: true })
+        .expect("report db healthy");
+    let snap = handle.full_snapshot(4_600).await.expect("snap");
+    assert!(snap.telemetry.db_ok);
+
+    // 5. Halted + SetMaintenancePaused { active: true/false } -> remains Halted unchanged.
+    let halted = handle
+        .apply_mode_trigger(
+            bot_risk::ModeTrigger::StateAnomaly {
+                reason: "test halt".to_owned(),
+            },
+            5_000,
+        )
+        .await
+        .expect("halt");
+    assert_eq!(halted, EngineMode::Halted);
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: true,
+            reason: "maintenance while halted".to_owned(),
+        })
+        .expect("send maint while halted");
+    let snap = handle.full_snapshot(5_100).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Halted);
+    assert!(snap.telemetry.maintenance_paused);
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: false,
+            reason: "clear while halted".to_owned(),
+        })
+        .expect("clear maint while halted");
+    let snap = handle.full_snapshot(5_200).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Halted);
+    assert!(!snap.telemetry.maintenance_paused);
+
+    // 6. Killed + SetMaintenancePaused { active: true/false } -> remains Killed unchanged.
+    let killed = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::ManualPanic, 6_000)
+        .await
+        .expect("kill");
+    assert_eq!(killed, EngineMode::Killed);
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: true,
+            reason: "maintenance while killed".to_owned(),
+        })
+        .expect("send maint while killed");
+    let snap = handle.full_snapshot(6_100).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Killed);
+    assert!(snap.telemetry.maintenance_paused);
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: false,
+            reason: "clear while killed".to_owned(),
+        })
+        .expect("clear maint while killed");
+    let snap = handle.full_snapshot(6_200).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Killed);
+    assert!(!snap.telemetry.maintenance_paused);
+
+    let _ = handle.shutdown(7_000).await;
+    let _ = join.await;
 }
