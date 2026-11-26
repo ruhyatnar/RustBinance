@@ -13,7 +13,7 @@ default = []
 testnet-it = []
 
 [dependencies]
-async-trait = "0.1.92"
+async-trait = { workspace = true }
 bot-config = { path = "../bot-config", version = "0.1.0" }
 bot-types = { workspace = true }
 futures-util = "0.3.34"

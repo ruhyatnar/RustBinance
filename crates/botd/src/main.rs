@@ -271,8 +271,11 @@ async fn build_adapters(cfg: &BotConfig, initial_equity: Decimal) -> Result<Buil
             {
                 forward_events(rx, merged_tx.clone());
             }
-            // TODO(verifier): wire `futures_adapter.take_event_rx()` via `forward_events(rx, merged_tx.clone())`
-            // once `exchange-fixer` adds `FuturesAdapter::take_event_rx()`.
+            if let Some(futures) = &futures_adapter
+                && let Some(rx) = futures.take_event_rx()
+            {
+                forward_events(rx, merged_tx.clone());
+            }
 
             let (primary, secondary): (Arc<dyn VenueAdapter>, Option<Arc<dyn VenueAdapter>>) =
                 match cfg.venues.default_active {

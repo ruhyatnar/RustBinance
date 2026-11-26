@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-async-trait = "0.1.92"
+async-trait = { workspace = true }
 bot-config = { path = "../bot-config", version = "0.1.0" }
 bot-exchange = { path = "../bot-exchange", version = "0.1.0" }
 bot-risk = { path = "../bot-risk", version = "0.1.0" }

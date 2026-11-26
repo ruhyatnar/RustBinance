@@ -172,9 +172,10 @@ impl EngineIpcBackend {
                     i64::try_from(p.opened_at.unix_timestamp_nanos() / 1_000_000).unwrap_or(now_ms);
                 let age_s =
                     u64::try_from(now_ms.saturating_sub(opened_ms).max(0) / 1000).unwrap_or(0);
-                // TODO(verifier): pass `full.ref_prices.get(&(p.venue, p.symbol.clone())).copied()`
-                // once `exec-engine-fixer` adds `ref_prices` to `EngineFullSnapshot`.
-                let mark = resolve_mark_price(p, None);
+                let mark = resolve_mark_price(
+                    p,
+                    full.ref_prices.get(&(p.venue, p.symbol.clone())).copied(),
+                );
                 let (profit_r, unrealized_quote) = compute_position_pnl(p, mark);
                 PositionView {
                     id: p.id,

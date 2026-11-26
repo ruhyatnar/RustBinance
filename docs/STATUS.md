@@ -32,6 +32,12 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-26 (Perbaikan Audit Menyeluruh Pasca-M19 — Core #1–#12 & Area Lanjutan):** menutup 12 temuan audit core (`botd`, `bot-exchange`, `bot-exec`, `bot-engine`) serta temuan audit area lanjutan (`bot-strategy`, `desktop-ui`, `web-ui`, `install.sh`):
+  - `botd`: wiring `MarketStrategyRunner` (`bot-marketdata` + `bot-indicators` + `bot-strategy` → `EngineHandle`), penggabungan user-event Spot + Futures (`FuturesAdapter::take_event_rx()` + guard kanal), metrik IPC nyata (`full.ref_prices`, `VenueRateTrackers`, `uptime_s`/latensi/drift), dan unifikasi `async-trait.workspace = true` di seluruh crate.
+  - `bot-exchange`: user-data stream Futures (`listenKey` + parser WS + `deactivate` aman tanpa membatalkan proteksi Algo), wiring M18 (`RateLimitTracker`, `BalanceCache`, `is_retryable`), dan sinkronisasi jam `ClockSyncState` di `FuturesWsSession`.
+  - `bot-exec` & `bot-engine`: rekonsiliasi proteksi Futures (`AlgoProtectionManager`), penanganan fill exit `GatewayEvent::Exec`, sinkronisasi `upsert_position` SQLite, PnL dari VWAP fill aktual tanpa double-deduct fee, `EngineFullSnapshot::ref_prices`, `last_journal_seq` SQLite aktual, dan TTL entry order (`expire_stale_entries`).
+  - `bot-strategy`: pagar kualitas §6.5, guard `tp1/tp2 > 0`, `btc_regime` sadar arah, dan cermin aturan/config S1/S2 Short.
+  - `desktop-ui`, `web-ui` & `install.sh`: `HoldToConfirmButton` 1,5 detik untuk `flatten` di Desktop UI, perbaikan binding `openPositions` & throttle refresh `Main.qml`, `formatPrice()` sub-sen, `openPnlUsd` + banner error di Web UI, dan penghormatan flag `--skip-*` di `install.sh`. Milestone berikutnya tetap **M20**.
 - **2026-11-26 (M19 — CLI Diagnostik, Key Audit & Pra-Live Probes):** selesaikan seluruh 6 tugas M19 (`docs/superpowers/plans/2026-11-26-m19-cli-diagnostics-probes.md`) pada branch `m19-cli-probes`:
   - `docs/verified-facts.md` & spec M19: verifikasi resmi OpenAPI `binance-docs/*.yaml` (`GET /fapi/v2/account` menyertakan `canTrade`; Futures `/ws-fapi/v1` tidak memiliki `session.logon` sehingga memakai read-only signed `v2/account.balance`).
   - `crates/bot-exchange`: tambah `auth::signed_query` (URL-encode Base64 signature `+`/`/`/`=`), `SpotRestClient::{account_snapshot, klines}`, dan `FuturesRestClient::klines`.

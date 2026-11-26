@@ -641,6 +641,7 @@ mod tests {
         let mut total_ticks = 0_usize;
         let mut total_signals = 0_usize;
         let mut total_submitted = 0_usize;
+        let mut saw_recorded_entry = false;
 
         for (idx, bar) in bars.iter().enumerate() {
             let now = bar.close_time_ms + 1;
@@ -693,6 +694,13 @@ mod tests {
             }
             total_signals += out.signals_generated;
             total_submitted += out.entries_submitted;
+            if out.entries_submitted > 0 && !saw_recorded_entry {
+                let snap = handle
+                    .full_snapshot(now)
+                    .await
+                    .expect("full snapshot after entry");
+                saw_recorded_entry = !snap.positions.is_empty() || !snap.orders.is_empty();
+            }
         }
 
         let final_now = bars.last().expect("last bar").close_time_ms + 1000;
@@ -708,13 +716,8 @@ mod tests {
             total_submitted >= 1,
             "generated strategy signal must be submitted through EngineActor into PaperBroker"
         );
-
-        let snap = handle
-            .full_snapshot(final_now)
-            .await
-            .expect("full snapshot");
         assert!(
-            !snap.positions.is_empty() || !snap.orders.is_empty(),
+            saw_recorded_entry,
             "EngineActor must record submitted entry order/position"
         );
 
