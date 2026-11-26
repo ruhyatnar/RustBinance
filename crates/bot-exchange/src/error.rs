@@ -12,14 +12,22 @@ pub enum ExchangeErrorKind {
     FilterFailure,
     /// `-1021`: Timestamp outside `recvWindow` (clock drift).
     TimestampOutOfWindow,
+    /// `-1022`: Signature for this request is not valid.
+    InvalidSignature,
     /// `-2010`: New order rejected (insufficient balance, `LIMIT_MAKER` would match).
     NewOrderRejected,
     /// `-2011`: Cancel rejected.
     CancelRejected,
     /// `-2013`: Order does not exist.
     OrderNotFound,
+    /// `-2014`: API-key format invalid.
+    ApiKeyFormatInvalid,
     /// `-2015`: Invalid API key, IP whitelist, or permissions.
     InvalidApiKeyOrPermission,
+    /// `-4046` (Futures): No need to change margin type.
+    NoNeedToChangeMarginType,
+    /// `-4059` (Futures): No need to change position side.
+    NoNeedToChangePositionSide,
     /// `-4120` (Futures): Conditional order must use Algo API.
     UseAlgoApi,
     /// `-5022` (Futures): Post-only (`GTX`) order would immediately match.
@@ -36,14 +44,35 @@ impl ExchangeErrorKind {
             -1003 => Self::TooManyRequests,
             -1013 => Self::FilterFailure,
             -1021 => Self::TimestampOutOfWindow,
+            -1022 => Self::InvalidSignature,
             -2010 => Self::NewOrderRejected,
             -2011 => Self::CancelRejected,
             -2013 => Self::OrderNotFound,
+            -2014 => Self::ApiKeyFormatInvalid,
             -2015 => Self::InvalidApiKeyOrPermission,
+            -4046 => Self::NoNeedToChangeMarginType,
+            -4059 => Self::NoNeedToChangePositionSide,
             -4120 => Self::UseAlgoApi,
             -5022 => Self::PostOnlyWouldMatch,
             other => Self::Other(other),
         }
+    }
+
+    /// Returns `true` when retrying the identical request will never succeed.
+    #[must_use]
+    pub const fn is_permanent(&self) -> bool {
+        matches!(
+            self,
+            Self::FilterFailure
+                | Self::InvalidSignature
+                | Self::NewOrderRejected
+                | Self::ApiKeyFormatInvalid
+                | Self::InvalidApiKeyOrPermission
+                | Self::NoNeedToChangeMarginType
+                | Self::NoNeedToChangePositionSide
+                | Self::UseAlgoApi
+                | Self::PostOnlyWouldMatch
+        )
     }
 }
 
@@ -242,6 +271,42 @@ impl GatewayError {
         matches!(self, Self::UnknownNeedsQuery { .. })
     }
 
+    /// Returns `true` if this error is transient and eligible for a retry/backoff policy.
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        match self {
+            Self::RateLimited { .. }
+            | Self::Http(_)
+            | Self::Transport(_)
+            | Self::SessionNotReady(_)
+            | Self::UnknownNeedsQuery { .. } => true,
+            Self::ExchangeRejected { kind, .. } => !kind.is_permanent(),
+            Self::IpBanned { .. }
+            | Self::InvalidAuth { .. }
+            | Self::TimestampOutOfWindow { .. }
+            | Self::InvalidRequest(_)
+            | Self::KeyLoad(_)
+            | Self::Unsupported(_)
+            | Self::WireFormat(_)
+            | Self::SessionClosed => false,
+        }
+    }
+
+    /// Returns `true` when an ambiguous 5xx/disconnected outcome signals exchange maintenance.
+    #[must_use]
+    pub fn is_maintenance(&self) -> bool {
+        match self {
+            Self::UnknownNeedsQuery { reason, .. } => {
+                let lower = reason.to_ascii_lowercase();
+                reason.contains("503")
+                    || lower.contains("maintenance")
+                    || lower.contains("system busy")
+                    || reason.contains("-1001")
+            }
+            _ => false,
+        }
+    }
+
     /// Returns the server-instructed `retryAfter` timestamp (ms), if present.
     #[must_use]
     pub const fn retry_after_ms(&self) -> Option<i64> {
@@ -333,5 +398,130 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn classifies_permanent_binance_codes_and_retryability() {
+        for (code, expected) in [
+            (-1022, ExchangeErrorKind::InvalidSignature),
+            (-2014, ExchangeErrorKind::ApiKeyFormatInvalid),
+            (-4046, ExchangeErrorKind::NoNeedToChangeMarginType),
+            (-4059, ExchangeErrorKind::NoNeedToChangePositionSide),
+        ] {
+            let kind = ExchangeErrorKind::from_code(code);
+            assert_eq!(kind, expected);
+            assert!(kind.is_permanent());
+            let err = GatewayError::from_exchange_error(400, Some(code), "err".into(), None, None);
+            assert!(!err.is_retryable());
+        }
+
+        let rate_limited =
+            GatewayError::from_exchange_error(429, Some(-1003), "slow".into(), None, None);
+        assert!(rate_limited.is_retryable());
+        assert!(!rate_limited.is_maintenance());
+
+        let maint = GatewayError::from_exchange_error(
+            503,
+            None,
+            "Service Unavailable: system maintenance".into(),
+            None,
+            None,
+        );
+        assert!(maint.is_maintenance());
+    }
+
+    #[test]
+    fn covers_all_permanent_non_retryable_and_maintenance_variants() {
+        for kind in [
+            ExchangeErrorKind::FilterFailure,
+            ExchangeErrorKind::InvalidSignature,
+            ExchangeErrorKind::NewOrderRejected,
+            ExchangeErrorKind::ApiKeyFormatInvalid,
+            ExchangeErrorKind::InvalidApiKeyOrPermission,
+            ExchangeErrorKind::NoNeedToChangeMarginType,
+            ExchangeErrorKind::NoNeedToChangePositionSide,
+            ExchangeErrorKind::UseAlgoApi,
+            ExchangeErrorKind::PostOnlyWouldMatch,
+        ] {
+            assert!(kind.is_permanent(), "{kind:?} must be permanent");
+            let err = GatewayError::ExchangeRejected {
+                status: 400,
+                code: -1,
+                kind,
+                message: "rejected".into(),
+            };
+            assert!(!err.is_retryable(), "{kind:?} must not be retryable");
+        }
+
+        for kind in [
+            ExchangeErrorKind::TooManyRequests,
+            ExchangeErrorKind::TimestampOutOfWindow,
+            ExchangeErrorKind::CancelRejected,
+            ExchangeErrorKind::OrderNotFound,
+            ExchangeErrorKind::Other(-1001),
+        ] {
+            assert!(!kind.is_permanent(), "{kind:?} must not be permanent");
+            let err = GatewayError::ExchangeRejected {
+                status: 400,
+                code: -1,
+                kind,
+                message: "transient".into(),
+            };
+            assert!(err.is_retryable(), "{kind:?} should be retryable");
+        }
+
+        for retryable in [
+            GatewayError::Http("timeout".into()),
+            GatewayError::Transport("reset".into()),
+            GatewayError::SessionNotReady(super::SessionState::Connecting),
+            GatewayError::UnknownNeedsQuery {
+                client_order_id: None,
+                reason: "502 bad gateway".into(),
+            },
+        ] {
+            assert!(retryable.is_retryable());
+        }
+
+        for non_retryable in [
+            GatewayError::IpBanned {
+                retry_after_ms: Some(123),
+                message: "banned".into(),
+            },
+            GatewayError::InvalidAuth {
+                code: -2015,
+                message: "bad key".into(),
+            },
+            GatewayError::TimestampOutOfWindow {
+                code: -1021,
+                message: "drift".into(),
+            },
+            GatewayError::InvalidRequest("bad param".into()),
+            GatewayError::KeyLoad("bad pem".into()),
+            GatewayError::Unsupported("oco".into()),
+            GatewayError::WireFormat("json".into()),
+            GatewayError::SessionClosed,
+        ] {
+            assert!(!non_retryable.is_retryable());
+            assert!(!non_retryable.is_maintenance());
+        }
+
+        for reason in [
+            "exchange returned status 503: unavailable",
+            "System MAINTENANCE in progress",
+            "SYSTEM BUSY, try again",
+            "internal error -1001 disconnected",
+        ] {
+            let err = GatewayError::UnknownNeedsQuery {
+                client_order_id: None,
+                reason: reason.into(),
+            };
+            assert!(err.is_maintenance(), "expected maintenance for: {reason}");
+        }
+
+        let non_maint = GatewayError::UnknownNeedsQuery {
+            client_order_id: None,
+            reason: "request timed out".into(),
+        };
+        assert!(!non_maint.is_maintenance());
     }
 }
