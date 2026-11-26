@@ -3,15 +3,84 @@
 
 pub mod cli;
 pub mod client;
+pub mod key_audit;
 pub mod keygen;
 
 use anyhow::{Context, Result, bail};
 use bot_config::{ConfigSourcePaths, load_config, load_from_paths};
 use bot_ipc::{CommandKind, ConfirmAction};
 
-use crate::cli::{Cli, Command, ConfigSubcommand};
+use crate::cli::{Cli, Command, ConfigSubcommand, KeySubcommand};
 use crate::client::UdsClient;
+use crate::key_audit::{fingerprint_key_file, inspect_key_file};
 use crate::keygen::generate_ed25519_keypair;
+
+/// Error returned when a diagnostic command completed but reported failures.
+///
+/// The `output` is the full report (text or JSON) and should be printed to stdout
+/// before exiting with a non-zero status.
+#[derive(Debug)]
+pub struct ReportFailure {
+    /// Rendered report.
+    pub output: String,
+}
+
+impl std::fmt::Display for ReportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("diagnostic report contains failures")
+    }
+}
+
+impl std::error::Error for ReportFailure {}
+
+/// Return `Ok(output)` when `ok`, otherwise `Err(ReportFailure)` carrying the output.
+fn report_result(ok: bool, output: String) -> Result<String> {
+    if ok {
+        Ok(output)
+    } else {
+        Err(ReportFailure { output }.into())
+    }
+}
+
+fn run_key(subcommand: KeySubcommand) -> Result<String> {
+    match subcommand {
+        KeySubcommand::Fingerprint { file, json } => {
+            let fp = fingerprint_key_file(&file)?;
+            if json {
+                Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "path": file,
+                    "sha256_fingerprint": fp,
+                }))?)
+            } else {
+                Ok(fp)
+            }
+        }
+        KeySubcommand::Inspect { file, json } => {
+            let rep = inspect_key_file(&file)?;
+            let out = if json {
+                serde_json::to_string_pretty(&rep)?
+            } else {
+                let mut s = format!(
+                    "{} [{}]\n  kind: {:?}\n  fingerprint: {}\n  file mode: {} ({})\n  dir mode: {} ({})",
+                    rep.path.display(),
+                    if rep.is_ok() { "OK" } else { "FAIL" },
+                    rep.kind,
+                    rep.sha256_fingerprint,
+                    rep.file_mode_octal,
+                    if rep.file_mode_ok { "ok" } else { "too open" },
+                    rep.dir_mode_octal,
+                    if rep.dir_mode_ok { "ok" } else { "too open" },
+                );
+                for issue in &rep.issues {
+                    s.push_str("\n  issue: ");
+                    s.push_str(issue);
+                }
+                s
+            };
+            report_result(rep.is_ok(), out)
+        }
+    }
+}
 
 /// Execute a parsed [`Cli`] command and return human-readable (or JSON) output.
 ///
@@ -48,6 +117,7 @@ pub async fn run_cli(cli: Cli) -> Result<String> {
                 ))
             }
         },
+        Command::Key { subcommand } => run_key(subcommand),
         Command::Status { socket, json } => {
             let client = UdsClient::connect(&socket).await?;
             let snap = client.snapshot();

@@ -38,6 +38,12 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: ConfigSubcommand,
     },
+    /// Local key audit commands (fingerprint, permission inspection).
+    Key {
+        /// Key action.
+        #[command(subcommand)]
+        subcommand: KeySubcommand,
+    },
     /// Query current engine, venue, risk, and position status.
     Status {
         /// Path to daemon Unix domain socket.
@@ -102,5 +108,28 @@ pub enum ConfigSubcommand {
         /// Optional explicit TOML configuration file path.
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+}
+
+/// Subcommands under `binance-botctl key` (local only; never prints private key material).
+#[derive(Debug, Subcommand)]
+pub enum KeySubcommand {
+    /// Print the `SHA256:<hex>` fingerprint of an Ed25519 public or private PEM.
+    Fingerprint {
+        /// Path to a public (`.pub.pem`) or private (`.pem`) key file.
+        #[arg(long)]
+        file: PathBuf,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect PEM validity, fingerprint, and Unix permissions (`0600` key, `0700` dir).
+    Inspect {
+        /// Path to a public or private key file.
+        #[arg(long)]
+        file: PathBuf,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
     },
 }

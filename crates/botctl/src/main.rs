@@ -1,15 +1,27 @@
 #![forbid(unsafe_code)]
 //! `binance-botctl` command-line interface binary.
 
-use anyhow::Result;
+use std::process::ExitCode;
+
 use botctl::cli::Cli;
-use botctl::run_cli;
+use botctl::{ReportFailure, run_cli};
 use clap::Parser;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let output = run_cli(cli).await?;
-    println!("{output}");
-    Ok(())
+    match run_cli(cli).await {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            if let Some(report) = err.downcast_ref::<ReportFailure>() {
+                println!("{}", report.output);
+            } else {
+                eprintln!("Error: {err:#}");
+            }
+            ExitCode::FAILURE
+        }
+    }
 }
