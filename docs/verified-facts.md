@@ -199,3 +199,15 @@ Daftar awal yang harus diverifikasi: `docs/spec/B-verify-checklist.md`.
 - Sumber: `binance-docs/FUTURES_REST.yaml`, `binance-docs/FUTURES_WS.yaml`, `binance-docs/FUTURES_WSS.yaml`
 - Diverifikasi: 2026-11-24 oleh agen
 - Dampak ke spec: tidak ada (sesuai §4.5 dan §7.8).
+
+## M19 Pra-Live Probes: Signed Account Read (`/api/v3/account` vs `/fapi/v2/account`) & WS-API Auth Spot vs Futures   (milestone: M19)
+- Fakta:
+  - **Spot Signed Account (`GET /api/v3/account`, `SPOT_REST.yaml`):** `x-ip-weight: 20`, `USER_DATA`, header `X-MBX-APIKEY`, query `timestamp` (+ opsional `recvWindow`, `omitZeroBalances`). Mengembalikan `canTrade: bool`, `canWithdraw: bool`, `canDeposit: bool`, `accountType`, `permissions: Vec<String>`, `commissionRates.{maker,taker,buyer,seller}`, dan `balances: [{asset, free, locked}]`.
+  - **Futures Signed Account (`GET /fapi/v2/account` vs `GET /fapi/v3/account`, `FUTURES_REST.yaml`):** Keduanya `x-ip-weight: 5`, `USER_DATA`, signed (`timestamp`, opsional `recvWindow`, header `X-MBX-APIKEY`). **`/fapi/v2/account` menyertakan `canTrade: bool`, `canDeposit: bool`, `canWithdraw: bool`, `feeTier`, `assets[]`, dan `positions[]`** (dan sudah digunakan oleh `FuturesRestClient::account_snapshot()`), sedangkan **`/fapi/v3/account` tidak menyertakan `canTrade`**. Oleh karena itu `probe signed --venue futures` wajib memakai `GET /fapi/v2/account` agar dapat mendeteksi `canTrade=false`.
+  - **WS-API Auth Probe (`SPOT_WS.yaml` vs `FUTURES_WS.yaml`):**
+    - Spot (`/ws-api/v3`): mendukung `session.logon` (khusus Ed25519) dan `session.logout`.
+    - USDⓈ-M Futures (`/ws-fapi/v1`): **tidak memiliki** `session.logon` (hanya 18 method, seluruhnya per-request signing dengan `apiKey`, `timestamp`, `signature`). Method read-only signed paling ringan untuk memverifikasi autentikasi WS-API Futures adalah **`v2/account.balance`** (`x-ip-weight: 5`, `USER_DATA`) atau `v2/account.status` (`x-ip-weight: 5`, `USER_DATA`).
+  - **Public Klines REST (`dry-run signal`):** `GET /api/v3/klines` (Spot) dan `GET /fapi/v1/klines` (Futures), parameter `symbol`, `interval`, `limit` (maks 1000) — skema 12 kolom konsisten dengan entri M09.
+- Sumber: `binance-docs/SPOT_REST.yaml`, `binance-docs/SPOT_WS.yaml`, `binance-docs/FUTURES_REST.yaml`, `binance-docs/FUTURES_WS.yaml`
+- Diverifikasi: 2026-11-26 oleh agen
+- Dampak ke spec: revisi minor pada `docs/superpowers/specs/2026-11-26-m18-m21-prelive-ops-design.md` §5 M19 butir 3 (`/fapi/v2/account` agar `canTrade` tersedia) dan butir 5 (`ws-logon` Futures memakai signed `v2/account.balance` + catatan eksplisit bahwa Futures WS-API tidak memiliki `session.logon`).

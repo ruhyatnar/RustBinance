@@ -122,12 +122,12 @@ Agar `M19`, `M20`, dan `M21` dapat berjalan independen tanpa bentrok skema, semu
 2. **`binance-botctl doctor [--config <path>] [--socket <path>] [--json]`**
    - Menjalankan matriks pengecekan dalam satu perintah: validasi config, keberadaan & izin key, keberadaan `live_confirmation_file` (jika mode live), konektivitas REST `/ping` + clock offset, status daemon via UDS, dan versi binary. Mengembalikan exit code non-zero jika ada check `FAIL`.
 3. **`binance-botctl probe signed [--venue spot|futures] [--config <path>] [--json]`**
-   - Menjalankan jalur klien asli `bot-exchange`: load credential Ed25519, self-test sign+verify lokal, cek clock offset (`-1021` guard), dan signed account read (`GET /api/v3/account` atau `/fapi/v3/account`) dengan *actionable hint* untuk kode error umum (`-2014`, `-2015`, `-1021`, `-1022`, `canTrade=false`). **Nol order dikirim.**
+   - Menjalankan jalur klien asli `bot-exchange`: load credential Ed25519, self-test sign+verify lokal, cek clock offset (`-1021` guard), dan signed account read (`GET /api/v3/account` untuk Spot atau `GET /fapi/v2/account` untuk Futures — terverifikasi menyertakan `canTrade`, sedangkan `/fapi/v3/account` tidak) dengan *actionable hint* untuk kode error umum (`-2014`, `-2015`, `-1021`, `-1022`, `canTrade=false`). **Nol order dikirim.**
 4. **`binance-botctl probe dry-run-order [--venue spot|futures] [--symbol BTCUSDT] [--json]`**
    - Mengambil `exchangeInfo` nyata (atau fixture offline saat `--offline`), menjalankan quantize `LOT_SIZE`/`PRICE_FILTER`/`NOTIONAL` dan menyusun payload + signature order entry & exit untuk jalur REST dan WS-API menggunakan stub transport (tidak mentransmisikan paket order ke jaringan).
 5. **`binance-botctl probe ws-logon` & `binance-botctl dry-run signal --symbol <SYM> [--venue spot|futures]`**
-   - `ws-logon`: uji `session.logon` WS-API Spot/Futures dan langsung tutup sesi bersih.
-   - `dry-run signal`: mengambil kline publik terbaru, menjalankan pipeline `bot-indicators` + `bot-strategy`, dan mencetak breakdown gate per indikator tanpa menyalakan daemon dan tanpa mengirim order.
+   - `ws-logon`: untuk Spot menjalankan `session.logon` WS-API (`/ws-api/v3`) lalu menutup sesi bersih; untuk Futures (yang per `docs/verified-facts.md` tidak memiliki `session.logon` di `/ws-fapi/v1` dan memakai per-request Ed25519 signing) menghubungkan ke `/ws-fapi/v1`, menjalankan probe read-only signed `v2/account.balance`, menutup koneksi bersih, dan melaporkan secara eksplisit bahwa Futures memakai per-request signing.
+   - `dry-run signal`: mengambil kline publik terbaru (`GET /api/v3/klines` / `GET /fapi/v1/klines`, atau fixture offline saat `--offline`), menjalankan pipeline `bot-indicators` + `bot-strategy`, dan mencetak breakdown gate per indikator tanpa menyalakan daemon dan tanpa mengirim order.
 
 ---
 
