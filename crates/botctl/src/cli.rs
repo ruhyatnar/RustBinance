@@ -65,6 +65,12 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: ProbeSubcommand,
     },
+    /// Standalone dry-run evaluation commands (no daemon, zero orders).
+    DryRun {
+        /// Dry-run action.
+        #[command(subcommand)]
+        subcommand: DryRunSubcommand,
+    },
     /// Query current engine, venue, risk, and position status.
     Status {
         /// Path to daemon Unix domain socket.
@@ -193,6 +199,29 @@ pub enum ProbeSubcommand {
         /// Target venue (`spot` or `futures`).
         #[arg(long, default_value = "spot")]
         venue: String,
+        /// Optional explicit TOML configuration file path.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Subcommands under `binance-botctl dry-run`.
+#[derive(Debug, Subcommand)]
+pub enum DryRunSubcommand {
+    /// Evaluate latest public klines through `bot-strategy` (S1/S2) and print gate breakdown.
+    Signal {
+        /// Trading symbol (e.g. `BTCUSDT`).
+        #[arg(long)]
+        symbol: String,
+        /// Target venue (`spot` or `futures`).
+        #[arg(long, default_value = "spot")]
+        venue: String,
+        /// Use deterministic offline synthetic klines without network calls.
+        #[arg(long)]
+        offline: bool,
         /// Optional explicit TOML configuration file path.
         #[arg(long)]
         config: Option<PathBuf>,

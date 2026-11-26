@@ -1,6 +1,6 @@
 # STATUS
 
-**Milestone aktif:** M19 — CLI Diagnostik, Key Audit & Pra-Live Probes (`[VERIFY]` & plan selesai; siap eksekusi implementasi; operasional G2–G5 Spot & Futures tetap pending sebelum live per `ADR-0005`)
+**Milestone aktif:** Selesai (M00–M19 engineering/tooling tuntas; M20–M21 siap dilanjutkan saat diperintahkan; operasional G2–G5 Spot & Futures pending sebelum live per `ADR-0005`)
 **Mode build:** paper / testnet (tidak ada live)
 **Terakhir diperbarui:** 2026-11-26
 
@@ -24,7 +24,7 @@
 - [x] **M16** — VenueManager & peralihan Spot ⇄ Futures, Short  → `docs/milestones/M16-*.md`
 - [x] **M17** — OPERASIONAL: gerbang Futures; opsional dual (engineering/tooling & runbook selesai via `ADR-0005`; operasional G2–G5 Futures-Long/Short & `ADR-0006` mode `dual` pending sebelum live) → `docs/milestones/M17-*.md`
 - [x] **M18** — Exchange & Runtime Reliability Hardening → `docs/superpowers/plans/2026-11-26-m18-exchange-runtime-hardening.md`
-- [ ] **M19** — CLI Diagnostik, Key Audit & Pra-Live Probes (`botctl`) → `docs/superpowers/plans/2026-11-26-m19-cli-diagnostics-probes.md`
+- [x] **M19** — CLI Diagnostik, Key Audit & Pra-Live Probes (`botctl`) → `docs/superpowers/plans/2026-11-26-m19-cli-diagnostics-probes.md`
 - [ ] **M20** — Soak Operations, Webhook Alerts & Akurasi Ledger/PnL → `docs/superpowers/specs/2026-11-26-m18-m21-prelive-ops-design.md`
 - [ ] **M21** — Keamanan IPC/Web & Observabilitas UI → `docs/superpowers/specs/2026-11-26-m18-m21-prelive-ops-design.md`
 
@@ -32,11 +32,10 @@
 _(kosong)_
 
 ## Catatan sesi terakhir
-- **2026-11-26 (Persiapan M19 — `[VERIFY]` & Plan):**
-  - Verifikasi resmi terhadap `binance-docs/{SPOT_REST,SPOT_WS,FUTURES_REST,FUTURES_WS}.yaml` selesai dan dicatat di `docs/verified-facts.md`:
-    - `probe signed --venue futures` ditetapkan memakai `GET /fapi/v2/account` (menyertakan `canTrade`, cocok dengan `FuturesRestClient`), bukan `/fapi/v3/account` yang tidak memiliki `canTrade`.
-    - `probe ws-logon --venue futures` ditetapkan menjalankan probe read-only signed `v2/account.balance` pada `/ws-fapi/v1` + melaporkan secara eksplisit bahwa Futures WS-API tidak memiliki `session.logon` (per-request Ed25519 signing).
-  - Spec `docs/superpowers/specs/2026-11-26-m18-m21-prelive-ops-design.md` (§5 M19) telah diselaraskan dan rencana implementasi M19 disimpan di `docs/superpowers/plans/2026-11-26-m19-cli-diagnostics-probes.md`.
+- **2026-11-26 (M19 — CLI Diagnostik, Key Audit & Pra-Live Probes):** selesaikan seluruh 6 tugas M19 (`docs/superpowers/plans/2026-11-26-m19-cli-diagnostics-probes.md`) pada branch `m19-cli-probes`:
+  - `docs/verified-facts.md` & spec M19: verifikasi resmi OpenAPI `binance-docs/*.yaml` (`GET /fapi/v2/account` menyertakan `canTrade`; Futures `/ws-fapi/v1` tidak memiliki `session.logon` sehingga memakai read-only signed `v2/account.balance`).
+  - `crates/bot-exchange`: tambah `auth::signed_query` (URL-encode Base64 signature `+`/`/`/`=`), `SpotRestClient::{account_snapshot, klines}`, dan `FuturesRestClient::klines`.
+  - `crates/botctl`: tambah `key fingerprint` & `key inspect` (SHA-256 publik + cek izin Unix `0600`/`0700`, nol kebocoran PEM), `doctor` (matriks penuh config/key/live-confirmation/REST+clock/UDS + exit code non-zero pada FAIL), `probe signed` (self-test Ed25519 + clock + `canTrade` + *actionable hint* `-2014`/`-2015`/`-1021`/`-1022`), `probe dry-run-order` (quantize filter + sign lokal, `--offline`, `transmitted=false`), `probe ws-logon` (Spot `session.logon` & Futures signed `v2/account.balance` + tutup bersih), dan `dry-run signal` (pipeline `bot-strategy` S1/S2 + breakdown `GateLog`, `order_sent=false`) serta suite integrasi offline `tests/m19_cli_probes.rs`.
 - **2026-11-26 (M18 — Exchange & Runtime Reliability Hardening):** selesaikan seluruh 7 tugas M18 (`docs/superpowers/plans/2026-11-26-m18-exchange-runtime-hardening.md`):
   - `crates/bot-exchange`: `ClockSyncState` (`Option<i64>` membedakan belum sinkron vs offset `0 ms`) + `ping()` di Spot/Futures REST, klasifikasi error permanen Binance (`-1022`, `-2014`, `-4046`, `-4059`) + `is_retryable()`/`is_maintenance()`, ingesti header rate-limit REST (`X-MBX-USED-WEIGHT-*`/`X-MBX-ORDER-COUNT-*`) + `RateBudgetExceeded`/`can_place_order()`, dan `BalanceCache` WS-first dengan pelacakan `BalanceProvenance`.
   - `crates/botd`, `crates/bot-engine`, `crates/bot-store`: `ProcessLock` single-instance via `File::try_lock()` (`binance-botd.<mode>.lock`), `SqliteStore::ping()` (`SELECT 1`), serta `HealthProbeRunner` + `EngineCommand::{SetMaintenancePaused, ReportDbHealth}` (auto-pause ke `Paused` saat maintenance tanpa membatalkan proteksi OCO/Algo, tidak pernah menurunkan `Halted`/`Killed`, tetap `Paused` pasca-pemulihan hingga `Resume` eksplisit operator).

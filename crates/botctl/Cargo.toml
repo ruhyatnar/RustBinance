@@ -17,7 +17,6 @@ anyhow.workspace = true
 base64 = "0.23.1"
 bot-config = { version = "0.1.0", path = "../bot-config" }
 bot-exchange = { version = "0.1.0", path = "../bot-exchange" }
-bot-indicators = { version = "0.1.0", path = "../bot-indicators" }
 bot-ipc = { version = "0.1.0", path = "../bot-ipc" }
 bot-strategy = { version = "0.1.0", path = "../bot-strategy" }
 bot-types = { version = "0.1.0", path = "../bot-types" }

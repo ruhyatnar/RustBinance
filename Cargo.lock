@@ -547,7 +547,6 @@ dependencies = [
  "base64 0.23.1",
  "bot-config",
  "bot-exchange",
- "bot-indicators",
  "bot-ipc",
  "bot-strategy",
  "bot-types",

@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod client;
 pub mod doctor;
+pub mod dry_run_signal;
 pub mod key_audit;
 pub mod keygen;
 pub mod probes;
@@ -12,7 +13,9 @@ use anyhow::{Context, Result, bail};
 use bot_config::{ConfigSourcePaths, load_config, load_from_paths};
 use bot_ipc::{CommandKind, ConfirmAction};
 
-use crate::cli::{Cli, Command, ConfigSubcommand, KeySubcommand, ProbeSubcommand};
+use crate::cli::{
+    Cli, Command, ConfigSubcommand, DryRunSubcommand, KeySubcommand, ProbeSubcommand,
+};
 use crate::client::UdsClient;
 use crate::key_audit::{fingerprint_key_file, inspect_key_file};
 use crate::keygen::generate_ed25519_keypair;
@@ -142,6 +145,7 @@ pub async fn run_cli(cli: Cli) -> Result<String> {
             report_result(report.overall_ok, out)
         }
         Command::Probe { subcommand } => run_probe(subcommand).await,
+        Command::DryRun { subcommand } => run_dry_run(subcommand).await,
         Command::Status { socket, json } => {
             let client = UdsClient::connect(&socket).await?;
             let snap = client.snapshot();
@@ -286,6 +290,33 @@ async fn run_probe(subcommand: ProbeSubcommand) -> Result<String> {
                 report.render_text()
             };
             report_result(report.authenticated && report.closed_cleanly, out)
+        }
+    }
+}
+
+async fn run_dry_run(subcommand: DryRunSubcommand) -> Result<String> {
+    match subcommand {
+        DryRunSubcommand::Signal {
+            symbol,
+            venue,
+            offline,
+            config,
+            json,
+        } => {
+            let venue = parse_venue_arg(&venue)?;
+            let report = dry_run_signal::run_dry_run_signal(&dry_run_signal::DryRunSignalOptions {
+                venue,
+                symbol,
+                offline,
+                config,
+                rest_url_override: None,
+            })
+            .await?;
+            if json {
+                Ok(serde_json::to_string_pretty(&report)?)
+            } else {
+                Ok(report.render_text())
+            }
         }
     }
 }
