@@ -3,6 +3,7 @@
 
 pub mod cli;
 pub mod client;
+pub mod doctor;
 pub mod key_audit;
 pub mod keygen;
 
@@ -118,6 +119,27 @@ pub async fn run_cli(cli: Cli) -> Result<String> {
             }
         },
         Command::Key { subcommand } => run_key(subcommand),
+        Command::Doctor {
+            config,
+            socket,
+            offline,
+            json,
+        } => {
+            let report = doctor::run_doctor(&doctor::DoctorOptions {
+                config,
+                socket,
+                spot_rest_url: None,
+                futures_rest_url: None,
+                offline,
+            })
+            .await;
+            let out = if json {
+                serde_json::to_string_pretty(&report)?
+            } else {
+                report.render_text()
+            };
+            report_result(report.overall_ok, out)
+        }
         Command::Status { socket, json } => {
             let client = UdsClient::connect(&socket).await?;
             let snap = client.snapshot();

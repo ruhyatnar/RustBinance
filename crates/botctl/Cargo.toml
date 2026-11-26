@@ -14,12 +14,17 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64 = "0.23.1"
 bot-config = { version = "0.1.0", path = "../bot-config" }
+bot-exchange = { version = "0.1.0", path = "../bot-exchange" }
+bot-indicators = { version = "0.1.0", path = "../bot-indicators" }
 bot-ipc = { version = "0.1.0", path = "../bot-ipc" }
+bot-strategy = { version = "0.1.0", path = "../bot-strategy" }
 bot-types = { version = "0.1.0", path = "../bot-types" }
 clap = { version = "4.6.9", features = ["derive"] }
 ed25519-dalek = { version = "3.0.0", features = ["pkcs8", "pem", "zeroize"] }
 rand = "0.10.4"
+rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.1"
@@ -28,4 +33,6 @@ uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+futures-util = "0.3.34"
 tempfile.workspace = true
+tokio-tungstenite = "0.30.0"

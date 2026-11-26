@@ -44,6 +44,21 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: KeySubcommand,
     },
+    /// Run pre-live diagnostic matrix (config, keys, confirmation, REST/clock, daemon UDS).
+    Doctor {
+        /// Optional explicit TOML configuration file path.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Path to daemon Unix domain socket.
+        #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
+        socket: PathBuf,
+        /// Skip remote REST `/ping` and `/time` checks.
+        #[arg(long)]
+        offline: bool,
+        /// Output full diagnostic report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Query current engine, venue, risk, and position status.
     Status {
         /// Path to daemon Unix domain socket.
