@@ -4,7 +4,8 @@ import {
 	decimalSign,
 	formatDecimalString,
 	formatDuration,
-	formatUtcTime
+	formatUtcTime,
+	sumDecimalStrings
 } from './decimal';
 
 describe('formatDecimalString (pure string, no parseFloat)', () => {
@@ -36,5 +37,13 @@ describe('formatDecimalString (pure string, no parseFloat)', () => {
 		expect(formatUtcTime(1790000000000)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
 		expect(formatDuration(15420)).toBe('4h 17m');
 		expect(formatDuration(45)).toBe('45s');
+	});
+
+	it('sums decimal strings exactly via BigInt without float rounding', () => {
+		expect(sumDecimalStrings([])).toBe('0.00');
+		expect(sumDecimalStrings(['0.1', '0.2'])).toBe('0.30');
+		expect(sumDecimalStrings(['125.456', '-25.456', '0.5'])).toBe('100.50');
+		expect(sumDecimalStrings(['-10.25', '-5.75'])).toBe('-16.00');
+		expect(sumDecimalStrings(['1000.005', '250.005'])).toBe('1,250.01');
 	});
 });

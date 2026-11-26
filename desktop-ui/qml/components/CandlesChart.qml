@@ -140,7 +140,7 @@ PanelCard {
 
                 ctx.fillStyle = strokeCol
                 ctx.font = "bold 10px monospace"
-                ctx.fillText(tag + " " + chartCard.fmt.formatDecimal(rawStr, 2), leftPad + plotW + 4, py + 3)
+                ctx.fillText(tag + " " + chartCard.fmt.formatPrice(rawStr), leftPad + plotW + 4, py + 3)
             }
 
             drawOverlayLine(ov.entry, "ENT", "#38bdf8")
@@ -153,7 +153,7 @@ PanelCard {
             var lastY = yForPrice(chartCard.fmt.toPlotNumber(lastCloseStr))
             ctx.fillStyle = Theme.textPrimary
             ctx.font = "11px monospace"
-            ctx.fillText(chartCard.fmt.formatDecimal(lastCloseStr, 2), leftPad + plotW + 4, Math.max(12, Math.min(height - 6, lastY)))
+            ctx.fillText(chartCard.fmt.formatPrice(lastCloseStr), leftPad + plotW + 4, Math.max(12, Math.min(height - 6, lastY)))
         }
     }
 }

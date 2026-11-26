@@ -18,6 +18,7 @@ public:
     explicit DecimalFormat(QObject* parent = nullptr);
 
     Q_INVOKABLE QString formatDecimal(const QString& raw, int maxFrac = -1) const;
+    Q_INVOKABLE QString formatPrice(const QString& raw) const;
     Q_INVOKABLE int decimalSign(const QString& raw) const;
     Q_INVOKABLE QString directionGlyph(const QString& raw) const;
 

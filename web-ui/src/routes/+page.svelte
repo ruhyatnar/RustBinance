@@ -42,16 +42,45 @@
 		snap ? clampPct(snap.risk.drawdown_pct, snap.risk.limits.kill_pct) : 0
 	);
 
+	let actionFeedback = $state<{ message: string; isError: boolean } | null>(null);
+
 	async function handlePause(): Promise<void> {
-		await botStream.pause();
+		try {
+			const res = await botStream.pause();
+			actionFeedback = { message: res.message || 'Entries paused', isError: !res.ok };
+		} catch (err) {
+			actionFeedback = {
+				message: err instanceof Error ? err.message : 'Failed to pause entries',
+				isError: true
+			};
+		}
 	}
 
 	async function handleResume(): Promise<void> {
-		await botStream.resume();
+		try {
+			const res = await botStream.resume();
+			actionFeedback = { message: res.message || 'Entries resumed', isError: !res.ok };
+		} catch (err) {
+			actionFeedback = {
+				message: err instanceof Error ? err.message : 'Failed to resume entries',
+				isError: true
+			};
+		}
 	}
 
 	async function handleClosePosition(id: string): Promise<void> {
-		await botStream.closePosition(id);
+		try {
+			const res = await botStream.closePosition(id);
+			actionFeedback = {
+				message: res.message || `Close requested for ${id}`,
+				isError: !res.ok
+			};
+		} catch (err) {
+			actionFeedback = {
+				message: err instanceof Error ? err.message : `Failed to close position ${id}`,
+				isError: true
+			};
+		}
 	}
 </script>
 
@@ -108,6 +137,26 @@
 				{/if}
 			{/snippet}
 		</PageHeader>
+
+		{#if actionFeedback}
+			<div
+				role={actionFeedback.isError ? 'alert' : 'status'}
+				class={`flex items-center justify-between rounded border px-3 py-2 font-mono text-xs ${
+					actionFeedback.isError
+						? 'border-danger-solid/50 bg-danger-solid/10 text-danger'
+						: 'border-warning/40 bg-warning/10 text-warning'
+				}`}
+			>
+				<span>{actionFeedback.message}</span>
+				<button
+					type="button"
+					onclick={() => (actionFeedback = null)}
+					class="rounded border border-current/40 px-2 py-0.5 text-[11px] hover:opacity-80"
+				>
+					Dismiss
+				</button>
+			</div>
+		{/if}
 
 		<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
 			<KpiCard

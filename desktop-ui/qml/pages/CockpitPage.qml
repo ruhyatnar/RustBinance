@@ -97,7 +97,7 @@ Item {
                                     elide: Text.ElideRight
                                 }
                                 Text {
-                                    text: cockpit.fmt ? cockpit.fmt.formatDecimal(model.entry, 2) : model.entry
+                                    text: cockpit.fmt ? cockpit.fmt.formatPrice(model.entry) : model.entry
                                     color: Theme.textPrimary
                                     font.pixelSize: 11
                                     font.family: Theme.monoFont
@@ -171,9 +171,9 @@ Item {
                                     Layout.preferredWidth: 84
                                 }
                                 Text {
-                                    text: "SL " + (cockpit.fmt ? cockpit.fmt.formatDecimal(model.stop, 2) : model.stop)
+                                    text: "SL " + (cockpit.fmt ? cockpit.fmt.formatPrice(model.stop) : model.stop)
                                           + (model.beDone ? " (BE)" : "")
-                                          + " · TP1 " + (cockpit.fmt ? cockpit.fmt.formatDecimal(model.tp1, 2) : model.tp1)
+                                          + " · TP1 " + (cockpit.fmt ? cockpit.fmt.formatPrice(model.tp1) : model.tp1)
                                     color: Theme.textSecondary
                                     font.pixelSize: 11
                                     font.family: Theme.monoFont

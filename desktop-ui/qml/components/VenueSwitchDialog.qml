@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import BinanceBot
 
 Dialog {
     id: root
@@ -17,6 +18,20 @@ Dialog {
     signal confirmSwitch(string targetVenue, string policy)
 
     readonly property bool blocked: engineMode === "Halted" || engineMode === "Killed"
+
+    onAboutToShow: {
+        selectedPolicy = "drain"
+        holdFlattenBtn.cancelHold()
+    }
+    onClosed: {
+        holdFlattenBtn.cancelHold()
+        selectedPolicy = "drain"
+    }
+    onSelectedPolicyChanged: {
+        if (selectedPolicy !== "flatten") {
+            holdFlattenBtn.cancelHold()
+        }
+    }
 
     ColumnLayout {
         spacing: 10
@@ -44,8 +59,21 @@ Dialog {
             color: "#ef4444"
             text: "Peralihan ditolak saat engine dalam mode " + root.engineMode
         }
+        HoldToConfirmButton {
+            id: holdFlattenBtn
+            visible: root.selectedPolicy === "flatten"
+            Layout.fillWidth: true
+            label: "Tahan 1,5s untuk Flatten & Alihkan"
+            holdMs: 1500
+            enabledControl: !root.blocked
+            onConfirmed: {
+                root.confirmSwitch(root.targetVenue, "flatten")
+                root.close()
+            }
+        }
         Button {
-            text: root.selectedPolicy === "flatten" ? "Tahan 1,5s untuk Flatten & Alihkan" : "Alihkan Venue"
+            visible: root.selectedPolicy !== "flatten"
+            text: "Alihkan Venue"
             enabled: !root.blocked
             onClicked: {
                 root.confirmSwitch(root.targetVenue, root.selectedPolicy)

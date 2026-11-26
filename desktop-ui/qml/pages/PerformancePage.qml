@@ -131,7 +131,7 @@ Item {
                     Text { text: model.venue.toUpperCase(); color: Theme.accent; font.pixelSize: 11; font.bold: true; Layout.preferredWidth: 58 }
                     Text { text: model.symbol; color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; Layout.preferredWidth: 88 }
                     Text { text: model.side; color: Theme.textSecondary; font.pixelSize: 11; Layout.preferredWidth: 64 }
-                    Text { text: perfPage.fmt ? perfPage.fmt.formatDecimal(model.price, 2) : model.price; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 100; horizontalAlignment: Text.AlignRight }
+                    Text { text: perfPage.fmt ? perfPage.fmt.formatPrice(model.price) : model.price; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 100; horizontalAlignment: Text.AlignRight }
                     Text { text: perfPage.fmt ? perfPage.fmt.formatDecimal(model.qty) : model.qty; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 90; horizontalAlignment: Text.AlignRight }
                     Text { text: perfPage.fmt ? perfPage.fmt.formatDecimal(model.fee, 4) : model.fee; color: Theme.textSecondary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 90; horizontalAlignment: Text.AlignRight }
                     Text {

@@ -83,6 +83,47 @@ export function formatDecimalString(raw: string, opts: FormatDecimalOptions = {}
 }
 
 /**
+ * Sum an array of exact decimal strings using BigInt arithmetic (zero `parseFloat`)
+ * and format with fixed fractional digits.
+ */
+export function sumDecimalStrings(values: readonly string[], decimals = 2): string {
+	const parsed: { negative: boolean; intPart: string; fracPart: string }[] = [];
+	let scale = Math.max(0, decimals);
+
+	for (const raw of values) {
+		const m = DECIMAL_RE.exec(raw.trim());
+		if (!m) continue;
+		const negative = m[1] === '-';
+		const intPart = m[2];
+		const fracPart = m[3] ?? '';
+		if (fracPart.length > scale) {
+			scale = fracPart.length;
+		}
+		parsed.push({ negative, intPart, fracPart });
+	}
+
+	let total = 0n;
+	for (const p of parsed) {
+		const scaled = BigInt(p.intPart + p.fracPart.padEnd(scale, '0'));
+		total += p.negative ? -scaled : scaled;
+	}
+
+	const negative = total < 0n;
+	const absStr = (negative ? -total : total).toString();
+	let rawSum: string;
+	if (scale === 0) {
+		rawSum = `${negative ? '-' : ''}${absStr}`;
+	} else {
+		const padded = absStr.padStart(scale + 1, '0');
+		const intPart = padded.slice(0, padded.length - scale);
+		const fracPart = padded.slice(padded.length - scale);
+		rawSum = `${negative ? '-' : ''}${intPart}.${fracPart}`;
+	}
+
+	return formatDecimalString(rawSum, { decimals });
+}
+
+/**
  * Format UTC epoch milliseconds as `HH:MM:SS` (UTC).
  */
 export function formatUtcTime(tsMs: number): string {

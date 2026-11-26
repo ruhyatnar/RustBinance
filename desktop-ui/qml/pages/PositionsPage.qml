@@ -61,13 +61,13 @@ Item {
                         Text { text: model.strategy; color: Theme.textSecondary; font.pixelSize: 11; Layout.preferredWidth: 110; elide: Text.ElideRight }
                         Text { text: model.state; color: Theme.textPrimary; font.pixelSize: 11; Layout.preferredWidth: 100; elide: Text.ElideRight }
                         Text { text: posPage.fmt ? posPage.fmt.formatDecimal(model.qty) : model.qty; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 74; horizontalAlignment: Text.AlignRight }
-                        Text { text: posPage.fmt ? posPage.fmt.formatDecimal(model.entry, 2) : model.entry; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 88; horizontalAlignment: Text.AlignRight }
-                        Text { text: posPage.fmt ? posPage.fmt.formatDecimal(model.mark, 2) : model.mark; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 88; horizontalAlignment: Text.AlignRight }
+                        Text { text: posPage.fmt ? posPage.fmt.formatPrice(model.entry) : model.entry; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 88; horizontalAlignment: Text.AlignRight }
+                        Text { text: posPage.fmt ? posPage.fmt.formatPrice(model.mark) : model.mark; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.monoFont; Layout.preferredWidth: 88; horizontalAlignment: Text.AlignRight }
                         Text {
-                            text: (posPage.fmt ? posPage.fmt.formatDecimal(model.stop, 2) : model.stop)
+                            text: (posPage.fmt ? posPage.fmt.formatPrice(model.stop) : model.stop)
                                   + (model.beDone ? " (BE)" : "")
-                                  + " / " + (posPage.fmt ? posPage.fmt.formatDecimal(model.tp1, 2) : model.tp1)
-                                  + " / " + (posPage.fmt ? posPage.fmt.formatDecimal(model.tp2, 2) : model.tp2)
+                                  + " / " + (posPage.fmt ? posPage.fmt.formatPrice(model.tp1) : model.tp1)
+                                  + " / " + (posPage.fmt ? posPage.fmt.formatPrice(model.tp2) : model.tp2)
                             color: Theme.textSecondary
                             font.pixelSize: 11
                             font.family: Theme.monoFont
@@ -123,7 +123,7 @@ Item {
                     Text { text: model.status; color: Theme.textPrimary; font.pixelSize: 11; Layout.preferredWidth: 90 }
                     Text {
                         text: (model.price.length > 0 && posPage.fmt)
-                              ? ("@ " + posPage.fmt.formatDecimal(model.price, 2))
+                              ? ("@ " + posPage.fmt.formatPrice(model.price))
                               : "MARKET"
                         color: Theme.textPrimary
                         font.pixelSize: 12

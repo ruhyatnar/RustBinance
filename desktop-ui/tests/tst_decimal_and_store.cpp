@@ -50,6 +50,19 @@ private slots:
         QCOMPARE(fmt.directionGlyph(QStringLiteral("1.9")), QStringLiteral("▲"));
         QCOMPARE(fmt.directionGlyph(QStringLiteral("-1.1")), QStringLiteral("▼"));
         QCOMPARE(fmt.directionGlyph(QStringLiteral("0.00")), QStringLiteral("•"));
+
+        // Adaptive price formatting preserves significant digits for sub-cent coins
+        QCOMPARE(fmt.formatPrice(QStringLiteral("68120.50")), QStringLiteral("68,120.50"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("3120.4567")), QStringLiteral("3,120.45"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("2.34567")), QStringLiteral("2.3456"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("2.5000")), QStringLiteral("2.50"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("0.123456")), QStringLiteral("0.1234"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("0.5000")), QStringLiteral("0.50"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("0.00001234")), QStringLiteral("0.00001234"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("0.0000123456")), QStringLiteral("0.00001234"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("0.00001200")), QStringLiteral("0.000012"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("0.00")), QStringLiteral("0.00"));
+        QCOMPARE(fmt.formatPrice(QStringLiteral("")), QStringLiteral("—"));
     }
 
     void appliesProtocolFixturesDetectsSeqGapsAndMergesDeltas() {

@@ -17,6 +17,7 @@
 	import VenueSwitchDialog, {
 		type SwitchPolicyOption
 	} from '$lib/components/VenueSwitchDialog.svelte';
+	import { sumDecimalStrings } from '$lib/format/decimal';
 
 	interface Props {
 		children: Snippet;
@@ -149,12 +150,17 @@
 		</div>
 
 		{#if snap}
+			{@const activeVenuePositions = snap.positions.filter((p) => p.venue === snap.venues.active)}
 			<VenueSwitchDialog
 				open={switchDialogOpen}
 				currentVenue={snap.venues.active}
 				targetVenue={switchTarget}
 				engineMode={snap.engine.mode}
-				openPositionsCount={snap.positions.filter((p) => p.venue === snap.venues.active).length}
+				openPositionsCount={activeVenuePositions.length}
+				openPnlUsd={sumDecimalStrings(
+					activeVenuePositions.map((p) => p.unrealized_quote),
+					2
+				)}
 				onConfirm={handleConfirmSwitch}
 				onCancel={() => (switchDialogOpen = false)}
 			/>

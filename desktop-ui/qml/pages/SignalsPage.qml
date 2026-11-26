@@ -55,7 +55,7 @@ Item {
                         Layout.preferredWidth: 96
                     }
                     Text {
-                        text: sigPage.fmt ? sigPage.fmt.formatDecimal(model.entry, 2) : model.entry
+                        text: sigPage.fmt ? sigPage.fmt.formatPrice(model.entry) : model.entry
                         color: Theme.textPrimary
                         font.pixelSize: 12
                         font.family: Theme.monoFont
@@ -63,7 +63,7 @@ Item {
                         horizontalAlignment: Text.AlignRight
                     }
                     Text {
-                        text: sigPage.fmt ? sigPage.fmt.formatDecimal(model.stop, 2) : model.stop
+                        text: sigPage.fmt ? sigPage.fmt.formatPrice(model.stop) : model.stop
                         color: Theme.negative
                         font.pixelSize: 12
                         font.family: Theme.monoFont

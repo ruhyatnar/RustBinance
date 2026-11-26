@@ -34,16 +34,33 @@ ApplicationWindow {
         }
     }
 
+    property string lastFetchedChartKey: ""
+    property string lastFetchedTradesVenue: ""
+
     Connections {
         target: stateStore
         function onSnapshotChanged() {
-            if (stateStore.hasSnapshot && stateStore.klines.length === 0 && commandService) {
+            if (!stateStore || !stateStore.hasSnapshot || !commandService) {
+                return
+            }
+            var chartKey = stateStore.activeVenue + "|" + stateStore.chartSymbol + "|" + stateStore.chartTf
+            if (stateStore.klines.length === 0 && chartKey !== rootWin.lastFetchedChartKey) {
+                rootWin.lastFetchedChartKey = chartKey
                 commandService.refreshKlines(
                     stateStore.activeVenue,
                     stateStore.chartSymbol,
                     stateStore.chartTf,
                     120)
+            }
+            if (stateStore.activeVenue !== rootWin.lastFetchedTradesVenue) {
+                rootWin.lastFetchedTradesVenue = stateStore.activeVenue
                 commandService.refreshTrades(stateStore.activeVenue)
+            }
+        }
+        function onConnectionChanged() {
+            if (stateStore && stateStore.connectionState !== "connected") {
+                rootWin.lastFetchedChartKey = ""
+                rootWin.lastFetchedTradesVenue = ""
             }
         }
     }
@@ -135,7 +152,7 @@ ApplicationWindow {
         id: venueSwitchDialog
         currentVenue: stateStore ? stateStore.activeVenue : "spot"
         engineMode: stateStore ? stateStore.engineMode : "Starting"
-        openPositionsCount: stateStore ? stateStore.openPositionsCount : 0
+        openPositionsCount: stateStore ? stateStore.openPositions : 0
         onConfirmSwitch: function(targetVenue, policy) {
             if (commandService) {
                 commandService.switchVenue(targetVenue, policy)

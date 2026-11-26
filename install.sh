@@ -14,6 +14,9 @@ PROFILE=""        # desktop | headless | container
 DO_DEPS=1
 DO_BUILD=1
 DO_INSTALL=1
+SKIP_DEPS_FLAG=0
+SKIP_BUILD_FLAG=0
+SKIP_INSTALL_FLAG=0
 ASSUME_YES=0
 DRY_RUN=0
 
@@ -42,9 +45,9 @@ while [ "$#" -gt 0 ]; do
     --desktop)      PROFILE="desktop" ;;
     --headless)     PROFILE="headless" ;;
     --container)    PROFILE="container" ;;
-    --skip-deps)    DO_DEPS=0 ;;
-    --skip-build)   DO_BUILD=0 ;;
-    --skip-install) DO_INSTALL=0 ;;
+    --skip-deps)    DO_DEPS=0; SKIP_DEPS_FLAG=1 ;;
+    --skip-build)   DO_BUILD=0; SKIP_BUILD_FLAG=1 ;;
+    --skip-install) DO_INSTALL=0; SKIP_INSTALL_FLAG=1 ;;
     -y|--yes)       ASSUME_YES=1 ;;
     --dry-run)      DRY_RUN=1 ;;
     -h|--help)      usage; exit 0 ;;
@@ -188,11 +191,19 @@ if [ "$PROFILE" != "container" ] && [ "$PKG_MGR" = "none" ] && [ "$DO_DEPS" -eq 
 fi
 
 if [ "$PROFILE" != "container" ] && [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
-  echo ""
-  echo "${C_BOLD}Sesuaikan langkah instalasi:${C_RESET}"
-  if prompt_yn "  1) Pasang dependensi sistem & pastikan Rust >= 1.89 ($PKG_MGR)?" "y"; then DO_DEPS=1; else DO_DEPS=0; fi
-  if prompt_yn "  2) Kompilasi proyek (Rust release + UI)?" "y"; then DO_BUILD=1; else DO_BUILD=0; fi
-  if prompt_yn "  3) Instal ke sistem (/usr/local/bin, /etc/binance-bot, keypair Ed25519)?" "y"; then DO_INSTALL=1; else DO_INSTALL=0; fi
+  if [ "$SKIP_DEPS_FLAG" -eq 0 ] || [ "$SKIP_BUILD_FLAG" -eq 0 ] || [ "$SKIP_INSTALL_FLAG" -eq 0 ]; then
+    echo ""
+    echo "${C_BOLD}Sesuaikan langkah instalasi:${C_RESET}"
+    if [ "$SKIP_DEPS_FLAG" -eq 0 ]; then
+      if prompt_yn "  1) Pasang dependensi sistem & pastikan Rust >= 1.89 ($PKG_MGR)?" "y"; then DO_DEPS=1; else DO_DEPS=0; fi
+    fi
+    if [ "$SKIP_BUILD_FLAG" -eq 0 ]; then
+      if prompt_yn "  2) Kompilasi proyek (Rust release + UI)?" "y"; then DO_BUILD=1; else DO_BUILD=0; fi
+    fi
+    if [ "$SKIP_INSTALL_FLAG" -eq 0 ]; then
+      if prompt_yn "  3) Instal ke sistem (/usr/local/bin, /etc/binance-bot, keypair Ed25519)?" "y"; then DO_INSTALL=1; else DO_INSTALL=0; fi
+    fi
+  fi
 fi
 
 echo ""
