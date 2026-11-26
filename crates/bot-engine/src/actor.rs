@@ -863,16 +863,25 @@ impl EngineActor {
                 now_ms,
                 reply,
             } => {
-                let mode = self.mode_machine.apply(trigger, now_ms);
-                let env = JournalEnvelope::new(JournalEvent::EngineModeChanged {
-                    mode,
-                    reason: self.mode_machine.reason().to_owned(),
-                });
-                if let Ok(seq) = self.store.append_event(now_ms, &env) {
-                    self.state.apply_event(seq, &env);
+                if self.maintenance_paused && matches!(trigger, ModeTrigger::ManualResumeFromPause)
+                {
+                    warn!(
+                        mode = ?self.mode_machine.mode(),
+                        "refusing manual resume while exchange maintenance is active"
+                    );
+                    let _ = reply.send(self.mode_machine.mode());
+                } else {
+                    let mode = self.mode_machine.apply(trigger, now_ms);
+                    let env = JournalEnvelope::new(JournalEvent::EngineModeChanged {
+                        mode,
+                        reason: self.mode_machine.reason().to_owned(),
+                    });
+                    if let Ok(seq) = self.store.append_event(now_ms, &env) {
+                        self.state.apply_event(seq, &env);
+                    }
+                    self.publish_telemetry();
+                    let _ = reply.send(mode);
                 }
-                self.publish_telemetry();
-                let _ = reply.send(mode);
             }
             EngineCommand::PanicFlatten { now_ms, reply } => {
                 let res = self.handle_panic_flatten(now_ms).await;
@@ -958,8 +967,12 @@ impl EngineActor {
                 if active {
                     if matches!(
                         self.mode_machine.mode(),
-                        EngineMode::Ready | EngineMode::Paused
+                        EngineMode::Ready
+                            | EngineMode::Paused
+                            | EngineMode::ReduceOnly
+                            | EngineMode::Syncing
                     ) {
+                        let prev_mode = self.mode_machine.mode();
                         let now_ms = unix_now_ms();
                         let mode = self.mode_machine.apply(
                             ModeTrigger::ManualPause {
@@ -967,17 +980,20 @@ impl EngineActor {
                             },
                             now_ms,
                         );
-                        let env = JournalEnvelope::new(JournalEvent::EngineModeChanged {
-                            mode,
-                            reason: self.mode_machine.reason().to_owned(),
-                        });
-                        if let Ok(seq) = self.store.append_event(now_ms, &env) {
-                            self.state.apply_event(seq, &env);
+                        if matches!(prev_mode, EngineMode::Ready | EngineMode::Paused) {
+                            let env = JournalEnvelope::new(JournalEvent::EngineModeChanged {
+                                mode,
+                                reason: self.mode_machine.reason().to_owned(),
+                            });
+                            if let Ok(seq) = self.store.append_event(now_ms, &env) {
+                                self.state.apply_event(seq, &env);
+                            }
                         }
                         warn!(
+                            ?prev_mode,
                             ?mode,
                             reason = %reason,
-                            "exchange maintenance detected; engine auto-paused with manual-resume latch (exchange protections preserved)"
+                            "exchange maintenance detected; manual-resume latch armed (exchange protections preserved)"
                         );
                     } else {
                         warn!(
@@ -1516,6 +1532,12 @@ impl EngineActor {
         intent: &EntryIntent,
         now_ms: i64,
     ) -> EntrySubmissionResult {
+        if self.maintenance_paused {
+            return EntrySubmissionResult::Rejected(GateDecision::Reject {
+                reasons: vec![RejectReason::EngineNotReady(self.mode_machine.mode())],
+                auto_disable_strategy: false,
+            });
+        }
         let Some(rules) = self
             .rules_by_venue_symbol
             .get(&(intent.venue, intent.symbol.clone()))

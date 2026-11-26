@@ -210,6 +210,10 @@ impl HealthProbeRunner {
     #[must_use]
     pub fn spawn(mut self, mut shutdown_rx: watch::Receiver<bool>) -> JoinHandle<()> {
         tokio::spawn(async move {
+            if *shutdown_rx.borrow() {
+                info!("health probe runner already signaled to shut down");
+                return;
+            }
             let mut ticker = tokio::time::interval(self.interval);
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {
@@ -222,7 +226,16 @@ impl HealthProbeRunner {
                         }
                     }
                     _ = ticker.tick() => {
-                        let _ = self.probe_once().await;
+                        tokio::select! {
+                            biased;
+                            changed = shutdown_rx.changed() => {
+                                if changed.is_err() || *shutdown_rx.borrow() {
+                                    info!("health probe runner stopping on shutdown signal during active probe");
+                                    break;
+                                }
+                            }
+                            _ = self.probe_once() => {}
+                        }
                     }
                 }
             }
@@ -464,6 +477,49 @@ mod tests {
             .expect("health probe task join");
 
         let _ = handle.shutdown(1_700_000_002_000).await;
+        let _ = join.await;
+    }
+
+    struct PendingPinger {
+        entered: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl ExchangePinger for PendingPinger {
+        async fn ping(&self, _venue: Venue) -> Result<(), GatewayError> {
+            self.entered.notify_one();
+            std::future::pending::<Result<(), GatewayError>>().await
+        }
+    }
+
+    #[tokio::test]
+    async fn spawned_probe_cancels_in_flight_ping_promptly_on_shutdown() {
+        let (handle, join) = spawn_test_engine().await;
+        let probe_store = Arc::new(Mutex::new(
+            SqliteStore::open_in_memory().expect("probe sqlite"),
+        ));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let pinger = Arc::new(PendingPinger {
+            entered: Arc::clone(&entered),
+        });
+        let runner =
+            HealthProbeRunner::new(probe_store, pinger, handle.clone(), Duration::from_secs(60));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = runner.spawn(shutdown_rx);
+
+        // Wait until the first tick has entered the never-resolving ping().
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("ping should start promptly on first interval tick");
+
+        // Signaling shutdown must cancel the in-flight probe immediately (well under 1s).
+        shutdown_tx.send(true).expect("send shutdown");
+        tokio::time::timeout(Duration::from_millis(500), task)
+            .await
+            .expect("in-flight health probe must cancel promptly on shutdown")
+            .expect("health probe task join");
+
+        let _ = handle.shutdown(1_700_000_003_000).await;
         let _ = join.await;
     }
 }

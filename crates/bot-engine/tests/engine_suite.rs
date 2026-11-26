@@ -1053,3 +1053,149 @@ async fn maintenance_pause_latches_manual_pause_from_transient_paused_and_blocks
     let _ = handle.shutdown(32_000).await;
     let _ = join.await;
 }
+
+#[tokio::test]
+async fn maintenance_pause_latch_survives_reduce_only_and_blocks_entry_and_resume() {
+    let broker = Arc::new(PaperBroker::new(PaperBrokerConfig {
+        rules: vec![sample_rules("BTCUSDT")],
+        initial_quote_balance: Decimal::from(10_000_u32),
+        ..PaperBrokerConfig::default()
+    }));
+    broker.activate().await.expect("activate");
+    let event_rx = broker.take_event_rx().expect("event_rx");
+    let store = SqliteStore::open_in_memory().expect("store");
+
+    let actor = EngineActor::bootstrap(
+        BotConfig::default(),
+        "b01".into(),
+        store,
+        broker,
+        Decimal::from(10_000_u32),
+        1_000,
+    )
+    .await
+    .expect("bootstrap");
+    let (handle, join) = actor.spawn(event_rx);
+
+    // 1. Activate maintenance -> Paused (manual_pause=true, maintenance_paused=true).
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: true,
+            reason: "HTTP 503 maintenance".to_owned(),
+        })
+        .expect("send maintenance active");
+    let snap = handle.full_snapshot(2_000).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+    assert!(snap.telemetry.maintenance_paused);
+
+    // 2. While maintenance_paused == true: submit_entry is rejected and ManualResumeFromPause is blocked.
+    let intent = EntryIntent {
+        venue: Venue::Spot,
+        symbol: Symbol("BTCUSDT".into()),
+        direction: Direction::Long,
+        strategy: StrategyId::TrendPullback,
+        entry_price: Price(Decimal::from(100_u32)),
+        stop_price: Price(Decimal::from(98_u32)),
+        tp1_price: Price(Decimal::from(104_u32)),
+        size_mult: Decimal::ONE,
+        scanner_mult: Decimal::ONE,
+        is_scanner: false,
+    };
+    let entry_res = handle
+        .submit_entry(intent, 2_100)
+        .await
+        .expect("submit_entry");
+    assert!(
+        matches!(entry_res, EntrySubmissionResult::Rejected(_)),
+        "new entry must be rejected while maintenance_paused == true"
+    );
+    let resumed_during_maint = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::ManualResumeFromPause, 2_200)
+        .await
+        .expect("resume during maintenance");
+    assert_eq!(
+        resumed_during_maint,
+        EngineMode::Paused,
+        "ManualResumeFromPause must be refused while maintenance_paused == true"
+    );
+
+    // 3. DataStaleOver30s escalates Paused -> ReduceOnly, then HealthyTick >= 60s returns to Paused (NOT Ready).
+    let ro_mode = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::DataStaleOver30s, 3_000)
+        .await
+        .expect("stale -> reduce_only");
+    assert_eq!(ro_mode, EngineMode::ReduceOnly);
+    let _ = handle
+        .apply_mode_trigger(
+            bot_risk::ModeTrigger::HealthyTick { now_ms: 10_000 },
+            10_000,
+        )
+        .await
+        .expect("healthy tick 1");
+    let after_healthy = handle
+        .apply_mode_trigger(
+            bot_risk::ModeTrigger::HealthyTick { now_ms: 70_000 },
+            70_000,
+        )
+        .await
+        .expect("healthy tick 2");
+    assert_eq!(
+        after_healthy,
+        EngineMode::Paused,
+        "HealthyTick after ReduceOnly must return to Paused when manual_pause is latched"
+    );
+
+    // 4. Clearing maintenance allows explicit ManualResumeFromPause -> Ready.
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: false,
+            reason: "exchange ping ok".to_owned(),
+        })
+        .expect("clear maintenance");
+    let snap = handle.full_snapshot(71_000).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+    assert!(!snap.telemetry.maintenance_paused);
+
+    let resumed = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::ManualResumeFromPause, 72_000)
+        .await
+        .expect("manual resume after clear");
+    assert_eq!(resumed, EngineMode::Ready);
+
+    // 5. Maintenance arriving while already in ReduceOnly latches manual_pause so HealthyTick lands in Paused.
+    assert_eq!(
+        handle
+            .apply_mode_trigger(bot_risk::ModeTrigger::DataStaleOver30s, 80_000)
+            .await
+            .expect("stale"),
+        EngineMode::ReduceOnly
+    );
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: true,
+            reason: "HTTP 503 during reduce_only".to_owned(),
+        })
+        .expect("maint during reduce_only");
+    let _ = handle
+        .apply_mode_trigger(
+            bot_risk::ModeTrigger::HealthyTick { now_ms: 90_000 },
+            90_000,
+        )
+        .await
+        .expect("healthy tick 1");
+    let after_ro_maint = handle
+        .apply_mode_trigger(
+            bot_risk::ModeTrigger::HealthyTick { now_ms: 150_000 },
+            150_000,
+        )
+        .await
+        .expect("healthy tick 2");
+    assert_eq!(
+        after_ro_maint,
+        EngineMode::Paused,
+        "HealthyTick after maintenance arrived during ReduceOnly must land in Paused"
+    );
+
+    let _ = handle.shutdown(160_000).await;
+    let _ = join.await;
+}

@@ -500,7 +500,6 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     info!("shutdown signal received; canceling pending entry orders only (preserving protections)");
     let _ = sd_notify::notify_stopping();
     let _ = health_shutdown_tx.send(true);
-    let _ = health_probe_task.await;
     if let Some(wd) = watchdog_task {
         wd.abort();
     }
@@ -513,6 +512,7 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         }
     };
     let _ = engine_join.await;
+    let _ = health_probe_task.await;
     telemetry_bridge.abort();
     uds_handle.abort();
     if let Some(http) = http_handle {

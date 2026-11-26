@@ -81,12 +81,17 @@ impl SpotAdapter {
         config: SpotAdapterConfig,
         credentials: Ed25519Credentials,
     ) -> Result<Self, GatewayError> {
-        let rest = SpotRestClient::new(&config.rest_url, config.rest_timeout)?;
+        let rate_limits = Arc::new(RateLimitTracker::new());
+        let rest = SpotRestClient::with_rate_limits(
+            &config.rest_url,
+            config.rest_timeout,
+            Arc::clone(&rate_limits),
+        )?;
         Ok(Self {
             config,
             rest,
             credentials: Arc::new(credentials),
-            rate_limits: Arc::new(RateLimitTracker::new()),
+            rate_limits,
             clock_offset_ms: Arc::new(AtomicI64::new(0)),
             session: RwLock::new(None),
             cached_exchange_info: RwLock::new(None),
@@ -309,5 +314,64 @@ impl VenueAdapter for SpotAdapter {
             sess.shutdown().await;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::{SpotAdapter, SpotAdapterConfig};
+    use crate::auth::Ed25519Credentials;
+    use crate::gateway::ExchangeGateway;
+    use crate::rate_limit::{RateLimitBucketKey, RateLimitInterval, RateLimitType};
+
+    #[tokio::test]
+    async fn spot_adapter_shares_rate_limit_tracker_with_rest_client() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await.expect("read");
+            let body = r#"{"serverTime":1700000000000,"rateLimits":[{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000}],"symbols":[]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-MBX-USED-WEIGHT-1M: 77\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.expect("write");
+        });
+
+        let creds = Ed25519Credentials::from_seed("test-key".to_owned(), [9u8; 32]).expect("creds");
+        let cfg = SpotAdapterConfig {
+            rest_url: format!("http://{addr}"),
+            rest_timeout: Duration::from_secs(2),
+            ..SpotAdapterConfig::default()
+        };
+        let adapter = SpotAdapter::new(cfg, creds).expect("adapter");
+        assert!(
+            Arc::ptr_eq(adapter.rate_limits(), adapter.rest.rate_limits()),
+            "SpotAdapter and SpotRestClient must share the same RateLimitTracker"
+        );
+
+        let _info = adapter.exchange_info().await.expect("exchange_info");
+        let snap = adapter.rate_limits().snapshot();
+        let weight = snap
+            .get(&RateLimitBucketKey {
+                rate_limit_type: RateLimitType::RequestWeight,
+                interval: RateLimitInterval::Minute,
+                interval_num: 1,
+            })
+            .expect("weight bucket populated from REST header");
+        assert_eq!(weight.count, 77);
+        assert_eq!(weight.limit, 6000);
+
+        server.await.expect("server join");
     }
 }

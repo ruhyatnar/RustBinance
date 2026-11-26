@@ -270,11 +270,19 @@ impl EngineModeMachine {
                 if self.mode == EngineMode::ReduceOnly {
                     let start = *self.healthy_since_ms.get_or_insert(tick_ms);
                     if tick_ms.saturating_sub(start) >= REDUCE_ONLY_HEALTHY_RELEASE_MS {
-                        self.transition(
-                            EngineMode::Ready,
-                            "healthy >= 60s; exited ReduceOnly".into(),
-                            tick_ms,
-                        );
+                        if self.manual_pause {
+                            self.transition(
+                                EngineMode::Paused,
+                                "healthy >= 60s; returned to Paused (manual pause latched)".into(),
+                                tick_ms,
+                            );
+                        } else {
+                            self.transition(
+                                EngineMode::Ready,
+                                "healthy >= 60s; exited ReduceOnly".into(),
+                                tick_ms,
+                            );
+                        }
                     }
                 }
             }
@@ -287,7 +295,15 @@ impl EngineModeMachine {
             }
             ModeTrigger::SyncComplete => {
                 if self.mode == EngineMode::Syncing {
-                    self.transition(EngineMode::Ready, "initial sync complete".into(), now_ms);
+                    if self.manual_pause {
+                        self.transition(
+                            EngineMode::Paused,
+                            "initial sync complete; held in Paused (manual pause latched)".into(),
+                            now_ms,
+                        );
+                    } else {
+                        self.transition(EngineMode::Ready, "initial sync complete".into(), now_ms);
+                    }
                 }
             }
             ModeTrigger::ReconnectOrSyncNeeded { reason } => {
@@ -299,6 +315,8 @@ impl EngineModeMachine {
             ModeTrigger::ManualPause { reason } => {
                 if matches!(self.mode, EngineMode::Ready | EngineMode::Paused) {
                     self.transition(EngineMode::Paused, reason, now_ms);
+                    self.manual_pause = true;
+                } else if matches!(self.mode, EngineMode::ReduceOnly | EngineMode::Syncing) {
                     self.manual_pause = true;
                 }
             }
@@ -334,8 +352,153 @@ impl EngineModeMachine {
         self.since_ms = now_ms;
         self.stable_since_ms = None;
         self.healthy_since_ms = None;
-        if next != EngineMode::Paused {
+        if !matches!(
+            next,
+            EngineMode::Paused | EngineMode::ReduceOnly | EngineMode::Syncing
+        ) {
             self.manual_pause = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_pause_latch_survives_reduce_only_and_returns_to_paused_on_healthy_tick() {
+        let mut m = EngineModeMachine::new(0);
+        m.apply(ModeTrigger::SyncStarted, 100);
+        assert_eq!(m.apply(ModeTrigger::SyncComplete, 200), EngineMode::Ready);
+
+        // Manual pause latches manual_pause = true.
+        assert_eq!(
+            m.apply(
+                ModeTrigger::ManualPause {
+                    reason: "maintenance".into()
+                },
+                1_000
+            ),
+            EngineMode::Paused
+        );
+
+        // Data stale escalates Paused -> ReduceOnly while preserving manual_pause.
+        assert_eq!(
+            m.apply(ModeTrigger::DataStaleOver30s, 2_000),
+            EngineMode::ReduceOnly
+        );
+
+        // HealthyTick >= 60s must return to Paused (NOT Ready).
+        assert_eq!(
+            m.apply(ModeTrigger::HealthyTick { now_ms: 10_000 }, 10_000),
+            EngineMode::ReduceOnly
+        );
+        assert_eq!(
+            m.apply(
+                ModeTrigger::HealthyTick {
+                    now_ms: 10_000 + REDUCE_ONLY_HEALTHY_RELEASE_MS
+                },
+                10_000 + REDUCE_ONLY_HEALTHY_RELEASE_MS
+            ),
+            EngineMode::Paused
+        );
+
+        // StableTick must not auto-resume because manual_pause is still latched.
+        assert_eq!(
+            m.apply(ModeTrigger::StableTick { now_ms: 80_000 }, 80_000),
+            EngineMode::Paused
+        );
+        assert_eq!(
+            m.apply(
+                ModeTrigger::StableTick {
+                    now_ms: 80_000 + PAUSE_STABLE_RELEASE_MS
+                },
+                80_000 + PAUSE_STABLE_RELEASE_MS
+            ),
+            EngineMode::Paused
+        );
+
+        // Only explicit ManualResumeFromPause transitions back to Ready.
+        assert_eq!(
+            m.apply(ModeTrigger::ManualResumeFromPause, 90_000),
+            EngineMode::Ready
+        );
+    }
+
+    #[test]
+    fn manual_pause_during_reduce_only_or_syncing_latches_without_downgrading() {
+        // Syncing + ManualPause -> SyncComplete lands in Paused.
+        let mut m = EngineModeMachine::new(0);
+        assert_eq!(m.apply(ModeTrigger::SyncStarted, 100), EngineMode::Syncing);
+        assert_eq!(
+            m.apply(
+                ModeTrigger::ManualPause {
+                    reason: "maintenance during sync".into()
+                },
+                150
+            ),
+            EngineMode::Syncing
+        );
+        assert_eq!(m.apply(ModeTrigger::SyncComplete, 200), EngineMode::Paused);
+        assert_eq!(
+            m.apply(ModeTrigger::ManualResumeFromPause, 300),
+            EngineMode::Ready
+        );
+
+        // ReduceOnly + ManualPause -> HealthyTick >= 60s lands in Paused.
+        assert_eq!(
+            m.apply(ModeTrigger::DataStaleOver30s, 1_000),
+            EngineMode::ReduceOnly
+        );
+        assert_eq!(
+            m.apply(
+                ModeTrigger::ManualPause {
+                    reason: "maintenance during reduce_only".into()
+                },
+                1_500
+            ),
+            EngineMode::ReduceOnly
+        );
+        assert_eq!(
+            m.apply(ModeTrigger::HealthyTick { now_ms: 2_000 }, 2_000),
+            EngineMode::ReduceOnly
+        );
+        assert_eq!(
+            m.apply(
+                ModeTrigger::HealthyTick {
+                    now_ms: 2_000 + REDUCE_ONLY_HEALTHY_RELEASE_MS
+                },
+                2_000 + REDUCE_ONLY_HEALTHY_RELEASE_MS
+            ),
+            EngineMode::Paused
+        );
+
+        // Halted and Killed are never downgraded by ManualPause.
+        assert_eq!(
+            m.apply(ModeTrigger::WeeklyLossHit, 70_000),
+            EngineMode::Halted
+        );
+        assert_eq!(
+            m.apply(
+                ModeTrigger::ManualPause {
+                    reason: "maintenance".into()
+                },
+                71_000
+            ),
+            EngineMode::Halted
+        );
+        assert_eq!(
+            m.apply(ModeTrigger::ManualPanic, 72_000),
+            EngineMode::Killed
+        );
+        assert_eq!(
+            m.apply(
+                ModeTrigger::ManualPause {
+                    reason: "maintenance".into()
+                },
+                73_000
+            ),
+            EngineMode::Killed
+        );
     }
 }

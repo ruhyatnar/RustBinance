@@ -328,7 +328,8 @@ impl FuturesRestClient {
                 "FuturesRestClient requires Ed25519Credentials for signed endpoints".into(),
             )
         })?;
-        params.insert("timestamp".to_owned(), now_unix_ms().to_string());
+        let ts_ms = self.clock.adjusted_now_ms(now_unix_ms());
+        params.insert("timestamp".to_owned(), ts_ms.to_string());
         let sig = creds.sign_params(&params);
         let query = format!("{}&signature={sig}", canonical_payload(&params));
         let url = format!("{}{path}?{query}", self.base_url);
@@ -809,5 +810,75 @@ mod tests {
         assert!(tracker.can_place_order(1_000, 90).is_err());
 
         server.await.expect("server join");
+    }
+
+    #[tokio::test]
+    async fn futures_signed_request_applies_recorded_clock_offset() {
+        use super::now_unix_ms;
+        use crate::auth::Ed25519Credentials;
+        use crate::spot::ServerTimeSync;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 2048];
+            let n = sock.read(&mut buf).await.expect("read");
+            let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let body = r#"{"canTrade":true,"updateTime":1700000000000,"assets":[]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.expect("write");
+            req
+        });
+
+        let creds = Arc::new(
+            Ed25519Credentials::from_seed("test-api-key".to_owned(), [7u8; 32]).expect("creds"),
+        );
+        let client = FuturesRestClient::new(
+            format!("http://{addr}"),
+            Duration::from_secs(2),
+            Some(creds),
+            Arc::new(RateLimitTracker::new()),
+        )
+        .expect("client");
+
+        let offset_ms: i64 = 123_456;
+        let before_ms = now_unix_ms();
+        client.clock_state().record(ServerTimeSync {
+            server_time_ms: before_ms.saturating_add(offset_ms),
+            local_time_ms: before_ms,
+            offset_ms,
+        });
+
+        let _snap = client.account_snapshot().await.expect("account snapshot");
+        let after_ms = now_unix_ms();
+        let raw_req = server.await.expect("server join");
+
+        let first_line = raw_req.lines().next().expect("request line");
+        let target = first_line
+            .split_whitespace()
+            .nth(1)
+            .expect("request target");
+        let query = target.split('?').nth(1).expect("query string");
+        let ts: i64 = query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("timestamp="))
+            .expect("timestamp param")
+            .parse()
+            .expect("numeric timestamp");
+
+        assert!(
+            ts >= before_ms.saturating_add(offset_ms).saturating_sub(1_000),
+            "signed timestamp {ts} must include +{offset_ms}ms clock offset (before={before_ms})"
+        );
+        assert!(
+            ts <= after_ms.saturating_add(offset_ms).saturating_add(1_000),
+            "signed timestamp {ts} exceeded expected upper bound (after={after_ms})"
+        );
     }
 }
