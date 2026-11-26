@@ -15,7 +15,7 @@ use bot_types::TradingMode;
 use serde::Serialize;
 
 use crate::client::UdsClient;
-use crate::key_audit::inspect_key_file;
+use crate::key_audit::{KeyFileKind, inspect_key_file};
 
 const REST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -158,9 +158,16 @@ pub async fn run_doctor(opts: &DoctorOptions) -> DoctorReport {
 
 fn load_doctor_config(config_path: Option<&Path>) -> anyhow::Result<BotConfig> {
     if let Some(path) = config_path {
+        if !path.is_file() {
+            anyhow::bail!("config file not found: {}", path.display());
+        }
+        let conf_d_dir = path
+            .parent()
+            .map(|p| p.join("conf.d"))
+            .filter(|d| d.is_dir());
         Ok(load_from_paths(&ConfigSourcePaths {
             base_file: Some(path.to_path_buf()),
-            conf_d_dir: None,
+            conf_d_dir,
             env_prefix: Some("BOT__".to_owned()),
         })?)
     } else {
@@ -234,6 +241,20 @@ fn check_single_venue_files(
 
     let priv_path = Path::new(private_key_path);
     match inspect_key_file(priv_path) {
+        Ok(rep) if rep.kind != KeyFileKind::PrivatePkcs8 => {
+            checks.push(DoctorCheck {
+                name: format!("{label}_key_permissions"),
+                status: CheckStatus::Fail,
+                detail: format!(
+                    "expected PKCS#8 private key PEM at {private_key_path}, found {:?}",
+                    rep.kind
+                ),
+                hint: Some(
+                    "point private_key_path to the .pem private key (not the .pub.pem public key)"
+                        .to_owned(),
+                ),
+            });
+        }
         Ok(rep) if rep.is_ok() => {
             checks.push(DoctorCheck {
                 name: format!("{label}_key_permissions"),
@@ -270,6 +291,15 @@ fn check_single_venue_files(
         }
     }
 
+    check_live_confirmation(label, live_confirmation_file, mode, checks);
+}
+
+fn check_live_confirmation(
+    label: &str,
+    live_confirmation_file: &str,
+    mode: TradingMode,
+    checks: &mut Vec<DoctorCheck>,
+) {
     if mode == TradingMode::Live {
         let confirm_ok = !live_confirmation_file.trim().is_empty()
             && std::fs::read_to_string(live_confirmation_file).is_ok_and(|s| !s.trim().is_empty());

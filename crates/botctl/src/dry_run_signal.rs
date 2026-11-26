@@ -114,15 +114,29 @@ fn synthetic_closed_klines(count: usize, step_ms: i64) -> Vec<Kline> {
     out
 }
 
+fn interval_to_ms(tf: &str) -> i64 {
+    match tf {
+        "1m" => 60_000,
+        "5m" => 300_000,
+        "15m" => 900_000,
+        "30m" => 1_800_000,
+        "4h" => 14_400_000,
+        "1d" => 86_400_000,
+        _ => 3_600_000, // default 1h
+    }
+}
+
 async fn fetch_klines(
     cfg: &BotConfig,
     opts: &DryRunSignalOptions,
     symbol: &str,
 ) -> Result<(Vec<Kline>, Vec<Kline>)> {
+    let signal_tf = cfg.strategy.trend_pullback.signal_tf.as_str();
+    let htf = cfg.strategy.trend_pullback.htf.as_str();
     if opts.offline {
         return Ok((
-            synthetic_closed_klines(usize::from(SIGNAL_BAR_LIMIT), 300_000),
-            synthetic_closed_klines(usize::from(HTF_BAR_LIMIT), 14_400_000),
+            synthetic_closed_klines(usize::from(SIGNAL_BAR_LIMIT), interval_to_ms(signal_tf)),
+            synthetic_closed_klines(usize::from(HTF_BAR_LIMIT), interval_to_ms(htf)),
         ));
     }
     let base_url = resolve_rest_base_url(cfg, opts.venue, opts.rest_url_override.as_deref());
@@ -131,14 +145,14 @@ async fn fetch_klines(
             let client = SpotRestClient::new(&base_url, KLINE_TIMEOUT)
                 .map_err(|e| anyhow::anyhow!("SpotRestClient init failed: {e}"))?;
             let sig = client
-                .klines(symbol, "5m", SIGNAL_BAR_LIMIT)
+                .klines(symbol, signal_tf, SIGNAL_BAR_LIMIT)
                 .await
-                .map_err(|e| anyhow::anyhow!("Spot 5m klines failed: {e}"))?;
-            let htf = client
-                .klines(symbol, "4h", HTF_BAR_LIMIT)
+                .map_err(|e| anyhow::anyhow!("Spot {signal_tf} klines failed: {e}"))?;
+            let htf_bars = client
+                .klines(symbol, htf, HTF_BAR_LIMIT)
                 .await
-                .map_err(|e| anyhow::anyhow!("Spot 4h klines failed: {e}"))?;
-            Ok((sig, htf))
+                .map_err(|e| anyhow::anyhow!("Spot {htf} klines failed: {e}"))?;
+            Ok((sig, htf_bars))
         }
         Venue::UsdsFutures => {
             let client = FuturesRestClient::new(
@@ -149,14 +163,14 @@ async fn fetch_klines(
             )
             .map_err(|e| anyhow::anyhow!("FuturesRestClient init failed: {e}"))?;
             let sig = client
-                .klines(symbol, "5m", SIGNAL_BAR_LIMIT)
+                .klines(symbol, signal_tf, SIGNAL_BAR_LIMIT)
                 .await
-                .map_err(|e| anyhow::anyhow!("Futures 5m klines failed: {e}"))?;
-            let htf = client
-                .klines(symbol, "4h", HTF_BAR_LIMIT)
+                .map_err(|e| anyhow::anyhow!("Futures {signal_tf} klines failed: {e}"))?;
+            let htf_bars = client
+                .klines(symbol, htf, HTF_BAR_LIMIT)
                 .await
-                .map_err(|e| anyhow::anyhow!("Futures 4h klines failed: {e}"))?;
-            Ok((sig, htf))
+                .map_err(|e| anyhow::anyhow!("Futures {htf} klines failed: {e}"))?;
+            Ok((sig, htf_bars))
         }
     }
 }
@@ -170,7 +184,7 @@ pub async fn run_dry_run_signal(opts: &DryRunSignalOptions) -> Result<DryRunSign
     let cfg = if let Some(path) = opts.config.as_deref() {
         load_probe_config(Some(path))?
     } else {
-        BotConfig::default()
+        load_probe_config(None).unwrap_or_default()
     };
     let symbol = opts.symbol.trim().to_ascii_uppercase();
     let (signal_bars, htf_bars) = fetch_klines(&cfg, opts, &symbol).await?;
@@ -233,17 +247,18 @@ pub async fn run_dry_run_signal(opts: &DryRunSignalOptions) -> Result<DryRunSign
         expected_slippage_bps: Decimal::new(2, 0),
     };
 
+    let allow_short = opts.venue == Venue::UsdsFutures && cfg.venues.futures.allow_short;
     let mut s1 = S1TrendPullback::new(
         cfg.strategy.trend_pullback.clone(),
         cfg.universe.max_spread_bps,
     )
-    .with_allow_short(opts.venue == Venue::UsdsFutures);
+    .with_allow_short(allow_short);
     let mut s2 = S2Breakout::new(
         cfg.strategy.breakout.clone(),
         cfg.universe.max_spread_bps,
         cfg.strategy.trend_pullback.cost_multiple,
     )
-    .with_allow_short(opts.venue == Venue::UsdsFutures);
+    .with_allow_short(allow_short);
 
     let d1 = s1.evaluate(&ctx);
     let d2 = s2.evaluate(&ctx);

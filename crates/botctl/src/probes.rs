@@ -14,11 +14,22 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bot_config::{BotConfig, ConfigSourcePaths, load_config, load_from_paths};
 use bot_exchange::auth::canonical_payload;
-use bot_exchange::{
-    Ed25519Credentials, ExchangeErrorKind, FuturesRestClient, FuturesWsSession, GatewayError,
-    RateLimitTracker, SpotRestClient, SpotSessionConfig, SpotWsSession,
+use bot_exchange::futures::rest::{
+    build_place_order_params as build_futures_order_params, json_map_to_btree,
 };
-use bot_types::{InstrumentRules, Price, Qty, RulesError, Symbol, TradingMode, Venue};
+use bot_exchange::futures::wire::build_place_algo_order_params;
+use bot_exchange::spot::wire::{
+    build_place_oco_params as build_spot_oco_params,
+    build_place_order_params as build_spot_order_params,
+};
+use bot_exchange::{
+    AlgoOrderType, Ed25519Credentials, ExchangeErrorKind, FuturesRestClient, FuturesWsSession,
+    GatewayError, PlaceAlgoOrderRequest, PlaceOcoRequest, PlaceOrderRequest, RateLimitTracker,
+    SpotRestClient, SpotSessionConfig, SpotWsSession, TimeInForce, WorkingType,
+};
+use bot_types::{
+    InstrumentRules, OrderKind, Price, Qty, RulesError, Side, Symbol, TradingMode, Venue,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -126,9 +137,16 @@ impl SignedProbeReport {
 
 pub(crate) fn load_probe_config(config: Option<&Path>) -> Result<BotConfig> {
     if let Some(path) = config {
+        if !path.is_file() {
+            bail!("config file not found: {}", path.display());
+        }
+        let conf_d_dir = path
+            .parent()
+            .map(|p| p.join("conf.d"))
+            .filter(|d| d.is_dir());
         load_from_paths(&ConfigSourcePaths {
             base_file: Some(path.to_path_buf()),
-            conf_d_dir: None,
+            conf_d_dir,
             env_prefix: Some("BOT__".to_owned()),
         })
         .with_context(|| format!("failed to load config {}", path.display()))
@@ -248,6 +266,11 @@ pub async fn run_signed_probe(opts: &SignedProbeOptions) -> Result<SignedProbeRe
                     }
                 });
             }
+            let non_zero_balances = snap
+                .balances
+                .iter()
+                .filter(|b| !b.free.is_zero() || !b.locked.is_zero())
+                .count();
             let ok = clock_within_limit && snap.can_trade;
             Ok(SignedProbeReport {
                 venue: opts.venue,
@@ -256,7 +279,7 @@ pub async fn run_signed_probe(opts: &SignedProbeOptions) -> Result<SignedProbeRe
                 clock_offset_ms,
                 clock_within_limit,
                 can_trade: Some(snap.can_trade),
-                non_zero_balances: snap.balances.len(),
+                non_zero_balances,
                 ok,
                 error,
                 hint,
@@ -341,14 +364,18 @@ pub struct DryRunOrderReport {
     pub quantized_qty: Decimal,
     /// Resulting notional (`quantized_price * quantized_qty`).
     pub notional_usd: Decimal,
-    /// Canonical REST entry query preview (never contains secrets).
+    /// Canonical REST/WS entry payload preview (built via `bot-exchange`, never contains secrets).
     pub rest_entry_query_preview: String,
+    /// Canonical protective exit payload preview (`orderList.place.oco` or `algoOrder.place`).
+    pub exit_payload_preview: String,
     /// WS API entry method name.
     pub ws_entry_method: String,
     /// WS API protective exit method name (`orderList.place.oco` or `algoOrder.place`).
     pub ws_exit_method: String,
-    /// Whether the locally generated Ed25519 signature passed strict verification.
+    /// Whether the locally generated entry Ed25519 signature passed strict verification.
     pub signature_verified_locally: bool,
+    /// Whether the locally generated protective exit Ed25519 signature passed strict verification.
+    pub exit_signature_verified_locally: bool,
     /// Always `false` — no order is ever transmitted over the network.
     pub transmitted: bool,
 }
@@ -358,7 +385,7 @@ impl DryRunOrderReport {
     #[must_use]
     pub fn render_text(&self) -> String {
         format!(
-            "probe dry-run-order ({:?} {}) [PASS — NOT TRANSMITTED]\n  price: {} | qty: {} | notional: ${}\n  ws entry: {} | ws exit: {}\n  signature verified locally: {}\n  rest preview: {}",
+            "probe dry-run-order ({:?} {}) [PASS — NOT TRANSMITTED]\n  price: {} | qty: {} | notional: ${}\n  ws entry: {} | ws exit: {}\n  signatures verified locally: entry={}, exit={}\n  entry preview: {}\n  exit preview: {}",
             self.venue,
             self.symbol,
             self.quantized_price,
@@ -367,7 +394,9 @@ impl DryRunOrderReport {
             self.ws_entry_method,
             self.ws_exit_method,
             self.signature_verified_locally,
-            self.rest_entry_query_preview
+            self.exit_signature_verified_locally,
+            self.rest_entry_query_preview,
+            self.exit_payload_preview
         )
     }
 }
@@ -456,46 +485,9 @@ pub async fn run_dry_run_order(opts: &DryRunOrderOptions) -> Result<DryRunOrderR
             .map_err(|e| anyhow::anyhow!("ephemeral credential init failed: {e}"))?
     };
 
-    let mut params = BTreeMap::new();
-    params.insert(
-        "newClientOrderId".to_owned(),
-        "dryrun_probe_entry_1".to_owned(),
-    );
-    params.insert("price".to_owned(), quantized_price.normalize().to_string());
-    params.insert("quantity".to_owned(), quantized_qty.normalize().to_string());
-    params.insert("side".to_owned(), "BUY".to_owned());
-    params.insert("symbol".to_owned(), symbol.clone());
-    params.insert(
-        "timeInForce".to_owned(),
-        match opts.venue {
-            Venue::Spot => "GTC".to_owned(),
-            Venue::UsdsFutures => "GTX".to_owned(),
-        },
-    );
-    params.insert("timestamp".to_owned(), "1700000000000".to_owned());
-    params.insert(
-        "type".to_owned(),
-        match opts.venue {
-            Venue::Spot => "LIMIT_MAKER".to_owned(),
-            Venue::UsdsFutures => "LIMIT".to_owned(),
-        },
-    );
-
-    let sig_b64 = creds.sign_params(&params);
-    let sig_bytes = BASE64_STANDARD
-        .decode(sig_b64.as_bytes())
-        .context("dry-run signature base64 decode failed")?;
-    let sig = Signature::from_slice(&sig_bytes).context("invalid Ed25519 signature")?;
-    let vk = VerifyingKey::from_bytes(&creds.public_key_bytes())
-        .context("invalid Ed25519 verifying key")?;
-    let payload = canonical_payload(&params);
-    vk.verify_strict(payload.as_bytes(), &sig)
-        .context("dry-run order signature failed strict verification")?;
-
-    let ws_exit_method = match opts.venue {
-        Venue::Spot => "orderList.place.oco".to_owned(),
-        Venue::UsdsFutures => "algoOrder.place".to_owned(),
-    };
+    let payloads = build_dry_run_payloads(opts.venue, &rules, quantized_price, quantized_qty)?;
+    let entry_payload = sign_and_verify_map(&creds, &payloads.entry)?;
+    let exit_payload = sign_and_verify_map(&creds, &payloads.exit)?;
 
     Ok(DryRunOrderReport {
         venue: opts.venue,
@@ -503,12 +495,142 @@ pub async fn run_dry_run_order(opts: &DryRunOrderOptions) -> Result<DryRunOrderR
         quantized_price,
         quantized_qty,
         notional_usd: notional,
-        rest_entry_query_preview: format!("{payload}&signature=<verified-ed25519-sig>"),
+        rest_entry_query_preview: format!("{entry_payload}&signature=<verified-ed25519-sig>"),
+        exit_payload_preview: format!("{exit_payload}&signature=<verified-ed25519-sig>"),
         ws_entry_method: "order.place".to_owned(),
-        ws_exit_method,
+        ws_exit_method: payloads.ws_exit_method.to_owned(),
         signature_verified_locally: true,
+        exit_signature_verified_locally: true,
         transmitted: false,
     })
+}
+
+struct DryRunPayloads {
+    entry: BTreeMap<String, String>,
+    exit: BTreeMap<String, String>,
+    ws_exit_method: &'static str,
+}
+
+fn build_dry_run_payloads(
+    venue: Venue,
+    rules: &InstrumentRules,
+    entry_price: Decimal,
+    qty: Decimal,
+) -> Result<DryRunPayloads> {
+    const SAMPLE_TS: i64 = 1_700_000_000_000;
+    let sym = rules.symbol.clone();
+    let tp_price = rules.floor_price(Price(entry_price * Decimal::new(102, 2)))?;
+    let sl_stop = rules.floor_price(Price(entry_price * Decimal::new(99, 2)))?;
+    let sl_limit = rules.floor_price(Price(entry_price * Decimal::new(988, 3)))?;
+
+    match venue {
+        Venue::Spot => {
+            let entry_req = PlaceOrderRequest {
+                symbol: sym.clone(),
+                side: Side::Buy,
+                kind: OrderKind::LimitMaker,
+                client_order_id: "dryrun_spot_entry_1".to_owned(),
+                quantity: Some(Qty(qty)),
+                quote_order_qty: None,
+                price: Some(Price(entry_price)),
+                stop_price: None,
+                time_in_force: None,
+            };
+            let entry_val = build_spot_order_params(&entry_req, SAMPLE_TS, Some(5_000))
+                .map_err(|e| anyhow::anyhow!("Spot entry payload build failed: {e}"))?;
+            let entry_map = entry_val
+                .as_object()
+                .cloned()
+                .context("Spot entry params must be a JSON object")?;
+
+            let oco_req = PlaceOcoRequest {
+                symbol: sym,
+                side: Side::Sell,
+                list_client_order_id: "dryrun_spot_oco_1".to_owned(),
+                quantity: Qty(qty),
+                above_type: OrderKind::LimitMaker,
+                above_client_order_id: Some("dryrun_spot_tp_1".to_owned()),
+                above_price: Some(tp_price),
+                above_stop_price: None,
+                above_time_in_force: None,
+                below_type: OrderKind::StopLossLimit,
+                below_client_order_id: Some("dryrun_spot_sl_1".to_owned()),
+                below_price: Some(sl_limit),
+                below_stop_price: Some(sl_stop),
+                below_time_in_force: Some(TimeInForce::Gtc),
+                below_trailing_delta: None,
+            };
+            let exit_val = build_spot_oco_params(&oco_req, SAMPLE_TS, Some(5_000))
+                .map_err(|e| anyhow::anyhow!("Spot OCO exit payload build failed: {e}"))?;
+            let exit_map = exit_val
+                .as_object()
+                .cloned()
+                .context("Spot OCO exit params must be a JSON object")?;
+
+            Ok(DryRunPayloads {
+                entry: json_map_to_btree(entry_map),
+                exit: json_map_to_btree(exit_map),
+                ws_exit_method: "orderList.place.oco",
+            })
+        }
+        Venue::UsdsFutures => {
+            let entry_req = PlaceOrderRequest {
+                symbol: sym.clone(),
+                side: Side::Buy,
+                kind: OrderKind::LimitMaker,
+                client_order_id: "dryrun_fut_entry_1".to_owned(),
+                quantity: Some(Qty(qty)),
+                quote_order_qty: None,
+                price: Some(Price(entry_price)),
+                stop_price: None,
+                time_in_force: Some(TimeInForce::Gtx),
+            };
+            let mut entry_params = build_futures_order_params(&entry_req);
+            entry_params.insert("timestamp".to_owned(), SAMPLE_TS.to_string());
+
+            let algo_req = PlaceAlgoOrderRequest {
+                symbol: sym,
+                side: Side::Sell,
+                order_type: AlgoOrderType::StopMarket,
+                client_algo_id: "dryrun_fut_sl_1".to_owned(),
+                quantity: None,
+                trigger_price: Some(sl_stop),
+                activate_price: None,
+                callback_rate: None,
+                working_type: WorkingType::MarkPrice,
+                close_position: true,
+                reduce_only: false,
+                price_protect: true,
+            };
+            let exit_map = build_place_algo_order_params(&algo_req)
+                .map_err(|e| anyhow::anyhow!("Futures algo exit payload build failed: {e}"))?;
+            let mut exit_params = json_map_to_btree(exit_map);
+            exit_params.insert("timestamp".to_owned(), SAMPLE_TS.to_string());
+
+            Ok(DryRunPayloads {
+                entry: entry_params,
+                exit: exit_params,
+                ws_exit_method: "algoOrder.place",
+            })
+        }
+    }
+}
+
+fn sign_and_verify_map(
+    creds: &Ed25519Credentials,
+    params: &BTreeMap<String, String>,
+) -> Result<String> {
+    let sig_b64 = creds.sign_params(params);
+    let sig_bytes = BASE64_STANDARD
+        .decode(sig_b64.as_bytes())
+        .context("dry-run signature base64 decode failed")?;
+    let sig = Signature::from_slice(&sig_bytes).context("invalid Ed25519 signature")?;
+    let vk = VerifyingKey::from_bytes(&creds.public_key_bytes())
+        .context("invalid Ed25519 verifying key")?;
+    let payload = canonical_payload(params);
+    vk.verify_strict(payload.as_bytes(), &sig)
+        .context("dry-run order signature failed strict verification")?;
+    Ok(payload)
 }
 
 /// Options for [`run_ws_logon_probe`].
@@ -537,13 +659,19 @@ pub struct WsLogonProbeReport {
     pub closed_cleanly: bool,
     /// Explanatory note (e.g. Futures per-request signing model).
     pub note: String,
+    /// Error summary when authentication failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Actionable remediation hint when authentication failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 impl WsLogonProbeReport {
     /// Render as concise human-readable text.
     #[must_use]
     pub fn render_text(&self) -> String {
-        format!(
+        let mut out = format!(
             "probe ws-logon ({:?}) [{}]\n  endpoint: {}\n  auth_mode: {}\n  closed_cleanly: {}\n  note: {}",
             self.venue,
             if self.authenticated && self.closed_cleanly {
@@ -555,7 +683,16 @@ impl WsLogonProbeReport {
             self.auth_mode,
             self.closed_cleanly,
             self.note
-        )
+        );
+        if let Some(err) = &self.error {
+            out.push_str("\n  error: ");
+            out.push_str(err);
+        }
+        if let Some(hint) = &self.hint {
+            out.push_str("\n  hint: ");
+            out.push_str(hint);
+        }
+        out
     }
 }
 
@@ -566,7 +703,7 @@ impl WsLogonProbeReport {
 ///   `v2/account.balance` (since Futures WS API has no `session.logon`), and closes.
 ///
 /// # Errors
-/// Returns an error if credentials, handshake, or WS authentication fails.
+/// Returns an error if local configuration or credentials cannot be loaded.
 pub async fn run_ws_logon_probe(opts: &WsLogonProbeOptions) -> Result<WsLogonProbeReport> {
     let cfg = load_probe_config(opts.config.as_deref())?;
     let creds = Arc::new(load_venue_credentials(&cfg, opts.venue)?);
@@ -587,23 +724,43 @@ pub async fn run_ws_logon_probe(opts: &WsLogonProbeOptions) -> Result<WsLogonPro
             });
 
     match opts.venue {
-        Venue::Spot => {
-            let ws_cfg = SpotSessionConfig {
-                ws_url: endpoint.clone(),
-                request_timeout: PROBE_TIMEOUT,
-                recv_window_ms: Some(cfg.binance.recv_window_ms),
-                ..SpotSessionConfig::default()
-            };
-            let (session, _events, _sub_id) = SpotWsSession::connect(
-                ws_cfg,
-                creds,
-                Arc::new(RateLimitTracker::new()),
-                Arc::new(AtomicI64::new(0)),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Spot WS session.logon failed: {e}"))?;
+        Venue::Spot => Ok(probe_spot_ws_logon(&cfg, opts, endpoint, creds).await),
+        Venue::UsdsFutures => Ok(probe_futures_ws_auth(endpoint, creds).await),
+    }
+}
+
+async fn probe_spot_ws_logon(
+    cfg: &BotConfig,
+    opts: &WsLogonProbeOptions,
+    endpoint: String,
+    creds: Arc<Ed25519Credentials>,
+) -> WsLogonProbeReport {
+    let offset_ms = if opts.ws_url_override.is_none() {
+        let rest_url = resolve_rest_base_url(cfg, Venue::Spot, None);
+        match SpotRestClient::new(&rest_url, PROBE_TIMEOUT) {
+            Ok(rest) => rest.server_time().await.map_or(0, |s| s.offset_ms),
+            Err(_) => 0,
+        }
+    } else {
+        0
+    };
+    let ws_cfg = SpotSessionConfig {
+        ws_url: endpoint.clone(),
+        request_timeout: PROBE_TIMEOUT,
+        recv_window_ms: Some(cfg.binance.recv_window_ms),
+        ..SpotSessionConfig::default()
+    };
+    match SpotWsSession::connect(
+        ws_cfg,
+        creds,
+        Arc::new(RateLimitTracker::new()),
+        Arc::new(AtomicI64::new(offset_ms)),
+    )
+    .await
+    {
+        Ok((session, _events, _sub_id)) => {
             session.shutdown().await;
-            Ok(WsLogonProbeReport {
+            WsLogonProbeReport {
                 venue: Venue::Spot,
                 endpoint,
                 auth_mode: "session.logon".to_owned(),
@@ -611,32 +768,69 @@ pub async fn run_ws_logon_probe(opts: &WsLogonProbeOptions) -> Result<WsLogonPro
                 closed_cleanly: true,
                 note: "Spot WS API session.logon succeeded and session shut down cleanly"
                     .to_owned(),
-            })
+                error: None,
+                hint: None,
+            }
         }
-        Venue::UsdsFutures => {
-            let session = FuturesWsSession::new(
-                endpoint.clone(),
-                creds,
-                Arc::new(RateLimitTracker::new()),
-                PROBE_TIMEOUT,
-            );
-            session
-                .connect()
-                .await
-                .map_err(|e| anyhow::anyhow!("Futures WS connect failed: {e}"))?;
-            let res = session.request("v2/account.balance", BTreeMap::new()).await;
-            session.close().await;
-            res.map_err(|e| anyhow::anyhow!("Futures WS v2/account.balance failed: {e}"))?;
-            Ok(WsLogonProbeReport {
-                venue: Venue::UsdsFutures,
-                endpoint,
-                auth_mode: "per_request_ed25519".to_owned(),
-                authenticated: true,
-                closed_cleanly: true,
-                note: "USD-M Futures WS API (/ws-fapi/v1) has no session.logon; verified per-request Ed25519 auth via read-only v2/account.balance"
-                    .to_owned(),
-            })
-        }
+        Err(err) => WsLogonProbeReport {
+            venue: Venue::Spot,
+            endpoint,
+            auth_mode: "session.logon".to_owned(),
+            authenticated: false,
+            closed_cleanly: true,
+            note: "Spot WS API session.logon failed".to_owned(),
+            error: Some(err.to_string()),
+            hint: actionable_hint_for_error(&err).map(str::to_owned),
+        },
+    }
+}
+
+async fn probe_futures_ws_auth(
+    endpoint: String,
+    creds: Arc<Ed25519Credentials>,
+) -> WsLogonProbeReport {
+    let session = FuturesWsSession::new(
+        endpoint.clone(),
+        creds,
+        Arc::new(RateLimitTracker::new()),
+        PROBE_TIMEOUT,
+    );
+    if let Err(err) = session.connect().await {
+        return WsLogonProbeReport {
+            venue: Venue::UsdsFutures,
+            endpoint,
+            auth_mode: "per_request_ed25519".to_owned(),
+            authenticated: false,
+            closed_cleanly: true,
+            note: "Futures WS API (/ws-fapi/v1) handshake failed".to_owned(),
+            error: Some(err.to_string()),
+            hint: actionable_hint_for_error(&err).map(str::to_owned),
+        };
+    }
+    let res = session.request("v2/account.balance", BTreeMap::new()).await;
+    session.close().await;
+    match res {
+        Ok(_) => WsLogonProbeReport {
+            venue: Venue::UsdsFutures,
+            endpoint,
+            auth_mode: "per_request_ed25519".to_owned(),
+            authenticated: true,
+            closed_cleanly: true,
+            note: "USD-M Futures WS API (/ws-fapi/v1) has no session.logon; verified per-request Ed25519 auth via read-only v2/account.balance"
+                .to_owned(),
+            error: None,
+            hint: None,
+        },
+        Err(err) => WsLogonProbeReport {
+            venue: Venue::UsdsFutures,
+            endpoint,
+            auth_mode: "per_request_ed25519".to_owned(),
+            authenticated: false,
+            closed_cleanly: true,
+            note: "USD-M Futures WS API (/ws-fapi/v1) signed v2/account.balance failed".to_owned(),
+            error: Some(err.to_string()),
+            hint: actionable_hint_for_error(&err).map(str::to_owned),
+        },
     }
 }
 
