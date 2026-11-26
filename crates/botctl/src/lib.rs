@@ -6,12 +6,13 @@ pub mod client;
 pub mod doctor;
 pub mod key_audit;
 pub mod keygen;
+pub mod probes;
 
 use anyhow::{Context, Result, bail};
 use bot_config::{ConfigSourcePaths, load_config, load_from_paths};
 use bot_ipc::{CommandKind, ConfirmAction};
 
-use crate::cli::{Cli, Command, ConfigSubcommand, KeySubcommand};
+use crate::cli::{Cli, Command, ConfigSubcommand, KeySubcommand, ProbeSubcommand};
 use crate::client::UdsClient;
 use crate::key_audit::{fingerprint_key_file, inspect_key_file};
 use crate::keygen::generate_ed25519_keypair;
@@ -140,6 +141,7 @@ pub async fn run_cli(cli: Cli) -> Result<String> {
             };
             report_result(report.overall_ok, out)
         }
+        Command::Probe { subcommand } => run_probe(subcommand).await,
         Command::Status { socket, json } => {
             let client = UdsClient::connect(&socket).await?;
             let snap = client.snapshot();
@@ -213,17 +215,45 @@ pub async fn run_cli(cli: Cli) -> Result<String> {
     }
 }
 
+pub(crate) fn parse_venue_arg(raw: &str) -> Result<bot_types::Venue> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "spot" => Ok(bot_types::Venue::Spot),
+        "futures" | "usds-futures" | "usdm" => Ok(bot_types::Venue::UsdsFutures),
+        other => bail!("invalid venue '{other}' (expected spot|futures)"),
+    }
+}
+
+async fn run_probe(subcommand: ProbeSubcommand) -> Result<String> {
+    match subcommand {
+        ProbeSubcommand::Signed {
+            venue,
+            config,
+            json,
+        } => {
+            let venue = parse_venue_arg(&venue)?;
+            let report = probes::run_signed_probe(&probes::SignedProbeOptions {
+                venue,
+                config,
+                rest_url_override: None,
+            })
+            .await?;
+            let out = if json {
+                serde_json::to_string_pretty(&report)?
+            } else {
+                report.render_text()
+            };
+            report_result(report.ok, out)
+        }
+    }
+}
+
 async fn run_switch_venue(
     target: &str,
     on_open_positions: &str,
     confirm: bool,
     socket: &std::path::Path,
 ) -> Result<String> {
-    let venue = match target.trim().to_ascii_lowercase().as_str() {
-        "spot" => bot_types::Venue::Spot,
-        "futures" | "usds-futures" | "usdm" => bot_types::Venue::UsdsFutures,
-        other => bail!("invalid --target '{other}' (expected spot|futures)"),
-    };
+    let venue = parse_venue_arg(target)?;
     let policy = match on_open_positions.trim().to_ascii_lowercase().as_str() {
         "drain" | "keep_managing" => bot_ipc::protocol::OnOpenPositionsArg::Drain,
         "refuse" | "require_flat" => bot_ipc::protocol::OnOpenPositionsArg::Refuse,

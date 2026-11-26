@@ -59,6 +59,12 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Non-destructive pre-live exchange probes (zero orders ever transmitted).
+    Probe {
+        /// Probe action.
+        #[command(subcommand)]
+        subcommand: ProbeSubcommand,
+    },
     /// Query current engine, venue, risk, and position status.
     Status {
         /// Path to daemon Unix domain socket.
@@ -143,6 +149,23 @@ pub enum KeySubcommand {
         /// Path to a public or private key file.
         #[arg(long)]
         file: PathBuf,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Subcommands under `binance-botctl probe`.
+#[derive(Debug, Subcommand)]
+pub enum ProbeSubcommand {
+    /// Verify Ed25519 signing, clock offset, and read-only signed account access (no orders).
+    Signed {
+        /// Target venue (`spot` or `futures`).
+        #[arg(long, default_value = "spot")]
+        venue: String,
+        /// Optional explicit TOML configuration file path.
+        #[arg(long)]
+        config: Option<PathBuf>,
         /// Output JSON.
         #[arg(long)]
         json: bool,
