@@ -966,3 +966,90 @@ async fn maintenance_pause_transitions_ready_to_paused_and_stays_paused_on_clear
     let _ = handle.shutdown(7_000).await;
     let _ = join.await;
 }
+
+#[tokio::test]
+async fn maintenance_pause_latches_manual_pause_from_transient_paused_and_blocks_stable_tick() {
+    let broker = Arc::new(PaperBroker::new(PaperBrokerConfig {
+        rules: vec![sample_rules("BTCUSDT")],
+        initial_quote_balance: Decimal::from(10_000_u32),
+        ..PaperBrokerConfig::default()
+    }));
+    broker.activate().await.expect("activate");
+    let event_rx = broker.take_event_rx().expect("event_rx");
+    let store = SqliteStore::open_in_memory().expect("store");
+
+    let actor = EngineActor::bootstrap(
+        BotConfig::default(),
+        "b01".into(),
+        store,
+        broker,
+        Decimal::from(10_000_u32),
+        1_000,
+    )
+    .await
+    .expect("bootstrap");
+    let (handle, join) = actor.spawn(event_rx);
+
+    // 1. Simulate WS drop placing engine into transient Paused (manual_pause = false).
+    let mode = handle
+        .apply_mode_trigger(
+            bot_risk::ModeTrigger::ReconnectOrSyncNeeded {
+                reason: "ws disconnect before rest poll".to_owned(),
+            },
+            2_000,
+        )
+        .await
+        .expect("transient pause");
+    assert_eq!(mode, EngineMode::Paused);
+
+    // 2. Maintenance REST poll fires while already in transient Paused -> must latch manual_pause.
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: true,
+            reason: "HTTP 503 maintenance".to_owned(),
+        })
+        .expect("send maintenance active");
+    let snap = handle.full_snapshot(2_500).await.expect("snap");
+    assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+    assert!(snap.telemetry.maintenance_paused);
+
+    // 3. StableTicks > 3s apart must NOT auto-resume to Ready (Opsi 1).
+    let m1 = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::StableTick { now_ms: 10_000 }, 10_000)
+        .await
+        .expect("stable tick 1");
+    assert_eq!(m1, EngineMode::Paused);
+    let m2 = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::StableTick { now_ms: 20_000 }, 20_000)
+        .await
+        .expect("stable tick 2");
+    assert_eq!(
+        m2,
+        EngineMode::Paused,
+        "StableTick must not auto-resume after maintenance latched manual_pause"
+    );
+
+    // 4. Clearing maintenance keeps manual_pause latched; StableTick still cannot auto-resume.
+    handle
+        .try_send(EngineCommand::SetMaintenancePaused {
+            active: false,
+            reason: "exchange ping ok".to_owned(),
+        })
+        .expect("send maintenance clear");
+    let m3 = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::StableTick { now_ms: 30_000 }, 30_000)
+        .await
+        .expect("stable tick 3");
+    assert_eq!(m3, EngineMode::Paused);
+    assert!(!handle.telemetry().maintenance_paused);
+
+    // 5. Explicit ManualResumeFromPause exits Paused -> Ready.
+    let m4 = handle
+        .apply_mode_trigger(bot_risk::ModeTrigger::ManualResumeFromPause, 31_000)
+        .await
+        .expect("manual resume");
+    assert_eq!(m4, EngineMode::Ready);
+
+    let _ = handle.shutdown(32_000).await;
+    let _ = join.await;
+}

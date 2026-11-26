@@ -956,7 +956,10 @@ impl EngineActor {
             EngineCommand::SetMaintenancePaused { active, reason } => {
                 self.maintenance_paused = active;
                 if active {
-                    if self.mode_machine.mode() == EngineMode::Ready {
+                    if matches!(
+                        self.mode_machine.mode(),
+                        EngineMode::Ready | EngineMode::Paused
+                    ) {
                         let now_ms = unix_now_ms();
                         let mode = self.mode_machine.apply(
                             ModeTrigger::ManualPause {
@@ -974,7 +977,7 @@ impl EngineActor {
                         warn!(
                             ?mode,
                             reason = %reason,
-                            "exchange maintenance detected; engine auto-paused (exchange protections preserved)"
+                            "exchange maintenance detected; engine auto-paused with manual-resume latch (exchange protections preserved)"
                         );
                     } else {
                         warn!(

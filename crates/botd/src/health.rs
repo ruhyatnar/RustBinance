@@ -160,12 +160,14 @@ impl HealthProbeRunner {
                 (true, reason)
             }
             Err(err) => {
+                let preserved = self.last_maintenance.unwrap_or(false);
                 debug!(
                     venue = ?active_venue,
                     error = %err,
-                    "exchange REST ping failed with non-maintenance error"
+                    preserved_maintenance = preserved,
+                    "exchange REST ping failed with non-maintenance error; preserving prior maintenance state"
                 );
-                (false, String::new())
+                (preserved, String::new())
             }
         };
 
@@ -374,6 +376,68 @@ mod tests {
         assert!(!snap.telemetry.maintenance_paused);
 
         let _ = handle.shutdown(1_700_000_002_000).await;
+        let _ = join.await;
+    }
+
+    #[tokio::test]
+    async fn probe_once_non_maintenance_error_does_not_clear_active_maintenance() {
+        let (handle, join) = spawn_test_engine().await;
+        let probe_store = Arc::new(Mutex::new(
+            SqliteStore::open_in_memory().expect("probe sqlite"),
+        ));
+        let pinger = Arc::new(MockPinger::new(1));
+        let mut runner = HealthProbeRunner::new(
+            probe_store,
+            pinger.clone(),
+            handle.clone(),
+            Duration::from_secs(15),
+        );
+
+        // 1. Maintenance detected -> maintenance_paused = true, mode = Paused.
+        let out = runner.probe_once().await;
+        assert_eq!(
+            out,
+            HealthProbeOutcome {
+                exchange_maintenance: true,
+                db_ok: true,
+            }
+        );
+        let snap = handle.full_snapshot(1_700_000_001_000).await.expect("snap");
+        assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+        assert!(snap.telemetry.maintenance_paused);
+
+        // 2. Subsequent non-maintenance transport error must NOT clear maintenance_paused.
+        pinger.set_mode(2);
+        let out = runner.probe_once().await;
+        assert_eq!(
+            out,
+            HealthProbeOutcome {
+                exchange_maintenance: true,
+                db_ok: true,
+            }
+        );
+        let snap = handle.full_snapshot(1_700_000_002_000).await.expect("snap");
+        assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+        assert!(
+            snap.telemetry.maintenance_paused,
+            "non-maintenance transport error must not falsely clear maintenance_paused"
+        );
+
+        // 3. Only Ok(()) clears maintenance_paused (while staying Paused per Opsi 1).
+        pinger.set_mode(0);
+        let out = runner.probe_once().await;
+        assert_eq!(
+            out,
+            HealthProbeOutcome {
+                exchange_maintenance: false,
+                db_ok: true,
+            }
+        );
+        let snap = handle.full_snapshot(1_700_000_003_000).await.expect("snap");
+        assert_eq!(snap.telemetry.mode, EngineMode::Paused);
+        assert!(!snap.telemetry.maintenance_paused);
+
+        let _ = handle.shutdown(1_700_000_004_000).await;
         let _ = join.await;
     }
 
