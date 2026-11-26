@@ -2,6 +2,7 @@
 //! Venue-agnostic exchange gateway traits and Binance Spot REST + WS API implementation.
 
 pub mod auth;
+pub mod balance_cache;
 pub mod clock;
 pub mod dedup;
 pub mod error;
@@ -11,6 +12,7 @@ pub mod rate_limit;
 pub mod spot;
 
 pub use auth::Ed25519Credentials;
+pub use balance_cache::{BalanceCache, BalanceProvenance, BalanceSource, CachedAccountSnapshot};
 pub use clock::ClockSyncState;
 pub use dedup::EventDeduplicator;
 pub use error::{ExchangeErrorKind, GatewayError, SessionState};
