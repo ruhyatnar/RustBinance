@@ -8,6 +8,7 @@ use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+use crate::clock::ClockSyncState;
 use crate::error::GatewayError;
 use crate::gateway::ExchangeInfoSnapshot;
 use crate::rate_limit::RateLimitRule;
@@ -28,6 +29,7 @@ pub struct ServerTimeSync {
 pub struct SpotRestClient {
     base_url: String,
     http: Client,
+    clock: ClockSyncState,
 }
 
 impl SpotRestClient {
@@ -48,7 +50,30 @@ impl SpotRestClient {
         Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             http,
+            clock: ClockSyncState::new(),
         })
+    }
+
+    /// Return the shared clock synchronization state updated by [`Self::server_time`].
+    #[must_use]
+    pub const fn clock_state(&self) -> &ClockSyncState {
+        &self.clock
+    }
+
+    /// Query `GET /api/v3/ping` to test Spot REST connectivity.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure, rate limit (429/418), or non-success status.
+    pub async fn ping(&self) -> Result<(), GatewayError> {
+        let url = format!("{}/api/v3/ping", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let _body = check_rest_response(resp, now_unix_ms()).await?;
+        Ok(())
     }
 
     /// Query `GET /api/v3/time` and compute local-to-server clock offset.
@@ -71,11 +96,13 @@ impl SpotRestClient {
         let parsed: RawServerTime =
             serde_json::from_str(&body).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
 
-        Ok(ServerTimeSync {
+        let sync = ServerTimeSync {
             server_time_ms: parsed.server_time,
             local_time_ms: local_mid,
             offset_ms: parsed.server_time.saturating_sub(local_mid),
-        })
+        };
+        self.clock.record(sync);
+        Ok(sync)
     }
 
     /// Query `GET /api/v3/exchangeInfo` and parse symbol filter rules + rate limits.
@@ -329,5 +356,52 @@ mod tests {
         assert_eq!(eth.symbol.as_str(), "ETHUSDT");
         assert!(!eth.status_trading);
         assert_eq!(eth.min_notional, Decimal::from_str("10.0").expect("dec"));
+    }
+
+    #[tokio::test]
+    async fn server_time_records_clock_state_and_ping_succeeds() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().await.expect("accept");
+                let mut buf = [0u8; 1024];
+                let n = sock.read(&mut buf).await.expect("read");
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let (status, body) = if req.starts_with("GET /api/v3/time ") {
+                    ("200 OK", r#"{"serverTime":1700000000123}"#)
+                } else if req.starts_with("GET /api/v3/ping ") {
+                    ("200 OK", "{}")
+                } else {
+                    ("404 Not Found", r#"{"code":-1,"msg":"unexpected path"}"#)
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                sock.write_all(resp.as_bytes()).await.expect("write");
+            }
+        });
+
+        let client = super::SpotRestClient::new(format!("http://{addr}"), Duration::from_secs(2))
+            .expect("client");
+        assert_eq!(client.clock_state().offset_ms(), None);
+
+        client.ping().await.expect("ping");
+        let sync = client.server_time().await.expect("server_time");
+        assert_eq!(sync.server_time_ms, 1_700_000_000_123);
+        assert_eq!(client.clock_state().offset_ms(), Some(sync.offset_ms));
+        assert_eq!(
+            client.clock_state().last_sync_ms(),
+            Some(sync.local_time_ms)
+        );
+
+        server.await.expect("server join");
     }
 }

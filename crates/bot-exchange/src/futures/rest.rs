@@ -12,6 +12,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::auth::{Ed25519Credentials, canonical_payload};
+use crate::clock::ClockSyncState;
 use crate::error::GatewayError;
 use crate::futures::adapter::{FuturesAccountSetup, FuturesMarginType};
 use crate::futures::wire::{
@@ -23,6 +24,7 @@ use crate::gateway::{
     PlaceAlgoOrderRequest, PlaceOrderRequest, QueryOrderRequest,
 };
 use crate::rate_limit::RateLimitTracker;
+use crate::spot::ServerTimeSync;
 
 /// USDⓈ-M Futures REST client (`/fapi`) with Ed25519 request signing and isolated rate-limit tracking.
 #[derive(Clone)]
@@ -31,6 +33,7 @@ pub struct FuturesRestClient {
     http: Client,
     creds: Option<Arc<Ed25519Credentials>>,
     rate_limits: Arc<RateLimitTracker>,
+    clock: ClockSyncState,
 }
 
 impl std::fmt::Debug for FuturesRestClient {
@@ -38,6 +41,7 @@ impl std::fmt::Debug for FuturesRestClient {
         f.debug_struct("FuturesRestClient")
             .field("base_url", &self.base_url)
             .field("has_creds", &self.creds.is_some())
+            .field("clock", &self.clock)
             .finish_non_exhaustive()
     }
 }
@@ -67,7 +71,59 @@ impl FuturesRestClient {
             http,
             creds,
             rate_limits,
+            clock: ClockSyncState::new(),
         })
+    }
+
+    /// Return the shared clock synchronization state updated by [`Self::server_time`].
+    #[must_use]
+    pub const fn clock_state(&self) -> &ClockSyncState {
+        &self.clock
+    }
+
+    /// Query `GET /fapi/v1/ping` to test USDⓈ-M Futures REST connectivity.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure, rate limit (429/418), or non-success status.
+    pub async fn ping(&self) -> Result<(), GatewayError> {
+        let url = format!("{}/fapi/v1/ping", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let _body = self.check_response(resp).await?;
+        Ok(())
+    }
+
+    /// Query `GET /fapi/v1/time` and record the measured local-to-server clock offset.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure, rate limit (429/418), or malformed JSON.
+    pub async fn server_time(&self) -> Result<ServerTimeSync, GatewayError> {
+        let url = format!("{}/fapi/v1/time", self.base_url);
+        let t0 = now_unix_ms();
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let t1 = now_unix_ms();
+        let local_mid = t0.saturating_add(t1.saturating_sub(t0) / 2);
+
+        let body = self.check_response(resp).await?;
+        let parsed: RawServerTime =
+            serde_json::from_str(&body).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+
+        let sync = ServerTimeSync {
+            server_time_ms: parsed.server_time,
+            local_time_ms: local_mid,
+            offset_ms: parsed.server_time.saturating_sub(local_mid),
+        };
+        self.clock.record(sync);
+        Ok(sync)
     }
 
     /// Query `GET /fapi/v1/exchangeInfo` and parse symbol rules + rate limits.
@@ -612,8 +668,74 @@ struct RawAlgoAck {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RawServerTime {
+    server_time: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawCancelAlgoAck {
     symbol: Option<String>,
     algo_id: i64,
     client_algo_id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::FuturesRestClient;
+    use crate::rate_limit::RateLimitTracker;
+
+    #[tokio::test]
+    async fn futures_server_time_records_clock_state_and_ping_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().await.expect("accept");
+                let mut buf = [0u8; 1024];
+                let n = sock.read(&mut buf).await.expect("read");
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let (status, body) = if req.starts_with("GET /fapi/v1/time ") {
+                    ("200 OK", r#"{"serverTime":1700000000456}"#)
+                } else if req.starts_with("GET /fapi/v1/ping ") {
+                    ("200 OK", "{}")
+                } else {
+                    ("404 Not Found", r#"{"code":-1,"msg":"unexpected path"}"#)
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                sock.write_all(resp.as_bytes()).await.expect("write");
+            }
+        });
+
+        let client = FuturesRestClient::new(
+            format!("http://{addr}"),
+            Duration::from_secs(2),
+            None,
+            Arc::new(RateLimitTracker::new()),
+        )
+        .expect("client");
+        assert_eq!(client.clock_state().offset_ms(), None);
+
+        client.ping().await.expect("ping");
+        let sync = client.server_time().await.expect("server_time");
+        assert_eq!(sync.server_time_ms, 1_700_000_000_456);
+        assert_eq!(client.clock_state().offset_ms(), Some(sync.offset_ms));
+        assert_eq!(
+            client.clock_state().last_sync_ms(),
+            Some(sync.local_time_ms)
+        );
+
+        server.await.expect("server join");
+    }
 }
