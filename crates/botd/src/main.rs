@@ -5,6 +5,7 @@ mod health;
 mod ipc_backend;
 mod lock;
 mod logging;
+mod market_runner;
 mod sd_notify;
 
 use std::net::SocketAddr;
@@ -28,7 +29,7 @@ use bot_ipc::{
 };
 use bot_store::SqliteStore;
 use bot_types::{TradingMode, Venue};
-use ipc_backend::{EngineIpcBackend, spawn_telemetry_bridge};
+use ipc_backend::{EngineIpcBackend, VenueRateTrackers, spawn_telemetry_bridge};
 use lock::ProcessLock;
 use rust_decimal::Decimal;
 use time::OffsetDateTime;
@@ -125,6 +126,21 @@ struct BuiltAdapters {
     primary: Arc<dyn VenueAdapter>,
     secondary: Option<Arc<dyn VenueAdapter>>,
     event_rx: mpsc::Receiver<GatewayEvent>,
+    /// Keeps `event_rx` open for the full daemon lifetime even if no adapter event stream
+    /// is currently attached (e.g., Futures primary before secondary activation or switch).
+    event_tx_guard: mpsc::Sender<GatewayEvent>,
+    rate_trackers: VenueRateTrackers,
+}
+
+/// Forward gateway user-data events from an adapter receiver into the merged engine channel.
+fn forward_events(mut rx: mpsc::Receiver<GatewayEvent>, tx: mpsc::Sender<GatewayEvent>) {
+    tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            if tx.send(ev).await.is_err() {
+                break;
+            }
+        }
+    });
 }
 
 #[allow(clippy::too_many_lines)]
@@ -140,15 +156,8 @@ async fn build_adapters(cfg: &BotConfig, initial_equity: Decimal) -> Result<Buil
             spot.activate()
                 .await
                 .context("failed to activate paper spot broker")?;
-            if let Some(mut rx) = spot.take_event_rx() {
-                let tx = merged_tx.clone();
-                tokio::spawn(async move {
-                    while let Some(ev) = rx.recv().await {
-                        if tx.send(ev).await.is_err() {
-                            break;
-                        }
-                    }
-                });
+            if let Some(rx) = spot.take_event_rx() {
+                forward_events(rx, merged_tx.clone());
             }
 
             let futures: Option<Arc<dyn VenueAdapter>> = if cfg.venues.futures.enabled {
@@ -181,6 +190,8 @@ async fn build_adapters(cfg: &BotConfig, initial_equity: Decimal) -> Result<Buil
                 primary,
                 secondary,
                 event_rx: merged_rx,
+                event_tx_guard: merged_tx,
+                rate_trackers: VenueRateTrackers::default(),
             })
         }
         TradingMode::Testnet | TradingMode::Live => {
@@ -246,6 +257,23 @@ async fn build_adapters(cfg: &BotConfig, initial_equity: Decimal) -> Result<Buil
                 None
             };
 
+            let rate_trackers = VenueRateTrackers {
+                spot: spot_adapter.as_ref().map(|s| Arc::clone(s.rate_limits())),
+                futures: futures_adapter
+                    .as_ref()
+                    .map(|f| Arc::clone(f.rate_limits())),
+            };
+
+            // Wire user-data event streams for BOTH primary and secondary adapters so runtime
+            // venue switches never drop events or close `user_events_rx`.
+            if let Some(spot) = &spot_adapter
+                && let Some(rx) = spot.take_event_rx()
+            {
+                forward_events(rx, merged_tx.clone());
+            }
+            // TODO(verifier): wire `futures_adapter.take_event_rx()` via `forward_events(rx, merged_tx.clone())`
+            // once `exchange-fixer` adds `FuturesAdapter::take_event_rx()`.
+
             let (primary, secondary): (Arc<dyn VenueAdapter>, Option<Arc<dyn VenueAdapter>>) =
                 match cfg.venues.default_active {
                     Venue::Spot => {
@@ -255,16 +283,6 @@ async fn build_adapters(cfg: &BotConfig, initial_equity: Decimal) -> Result<Buil
                         p.activate()
                             .await
                             .context("failed to activate SpotAdapter")?;
-                        if let Some(mut rx) = p.take_event_rx() {
-                            let tx = merged_tx.clone();
-                            tokio::spawn(async move {
-                                while let Some(ev) = rx.recv().await {
-                                    if tx.send(ev).await.is_err() {
-                                        break;
-                                    }
-                                }
-                            });
-                        }
                         (
                             p as Arc<dyn VenueAdapter>,
                             futures_adapter.map(|f| f as Arc<dyn VenueAdapter>),
@@ -288,6 +306,8 @@ async fn build_adapters(cfg: &BotConfig, initial_equity: Decimal) -> Result<Buil
                 primary,
                 secondary,
                 event_rx: merged_rx,
+                event_tx_guard: merged_tx,
+                rate_trackers,
             })
         }
     }
@@ -400,6 +420,8 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
 
     let adapters = build_adapters(&cfg, initial_equity).await?;
     let active_venue = adapters.primary.venue();
+    let event_tx_guard = adapters.event_tx_guard;
+    let rate_trackers = adapters.rate_trackers;
 
     let now_ms = unix_now_ms();
     let mut actor = EngineActor::bootstrap(
@@ -422,7 +444,10 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     let (engine_handle, engine_join) = actor.spawn(adapters.event_rx);
 
     let shared_audit_store = Arc::new(Mutex::new(audit_store));
-    let backend = Arc::new(EngineIpcBackend::new(cfg.clone(), engine_handle.clone()));
+    let backend = Arc::new(
+        EngineIpcBackend::new(cfg.clone(), engine_handle.clone())
+            .with_rate_trackers(rate_trackers.clone()),
+    );
     let dispatcher = Arc::new(CommandDispatcher::new(
         backend,
         Some(Arc::clone(&shared_audit_store)),
@@ -430,9 +455,11 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     ));
     let hub = Arc::new(TelemetryHub::new(256));
     let telemetry_bridge = spawn_telemetry_bridge(
-        engine_handle.telemetry_rx(),
+        engine_handle.clone(),
         Arc::clone(&hub),
         cfg.general.mode,
+        now_ms,
+        rate_trackers,
     );
 
     let exchange_pinger: Arc<dyn health::ExchangePinger> = match cfg.general.mode {
@@ -442,7 +469,7 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
                 .context("failed to initialize REST health pinger")?,
         ),
     };
-    let (health_shutdown_tx, health_shutdown_rx) = tokio::sync::watch::channel(false);
+    let (daemon_shutdown_tx, health_shutdown_rx) = tokio::sync::watch::channel(false);
     let health_probe_task = health::HealthProbeRunner::new(
         Arc::clone(&shared_audit_store),
         exchange_pinger,
@@ -450,6 +477,13 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
         health::DEFAULT_HEALTH_PROBE_INTERVAL,
     )
     .spawn(health_shutdown_rx);
+
+    let market_runner_handle = market_runner::spawn_daemon_market_runner(
+        &cfg,
+        active_venue,
+        engine_handle.clone(),
+        daemon_shutdown_tx.subscribe(),
+    );
 
     let uds_path = PathBuf::from(&cfg.ipc.uds_path);
     let uds_handle = tokio::spawn({
@@ -499,11 +533,12 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
 
     info!("shutdown signal received; canceling pending entry orders only (preserving protections)");
     let _ = sd_notify::notify_stopping();
-    let _ = health_shutdown_tx.send(true);
+    let _ = daemon_shutdown_tx.send(true);
     if let Some(wd) = watchdog_task {
         wd.abort();
     }
 
+    market_runner_handle.shutdown().await;
     let canceled_entries = match engine_handle.shutdown(unix_now_ms()).await {
         Ok(n) => n,
         Err(err) => {
@@ -518,6 +553,7 @@ async fn run_daemon(config_path: &Path) -> Result<()> {
     if let Some(http) = http_handle {
         http.abort();
     }
+    drop(event_tx_guard);
 
     info!(
         canceled_entry_orders = canceled_entries,
@@ -623,5 +659,43 @@ mod tests {
             lock_file_path(Path::new("state.sqlite"), TradingMode::Paper),
             PathBuf::from("binance-botd.paper.lock")
         );
+    }
+
+    #[tokio::test]
+    async fn build_adapters_keeps_event_channel_open_when_futures_is_default_active() {
+        let mut cfg = BotConfig::default();
+        cfg.general.mode = TradingMode::Paper;
+        cfg.venues.futures.enabled = true;
+        cfg.venues.default_active = Venue::UsdsFutures;
+
+        let mut adapters = build_adapters(&cfg, Decimal::from(10_000_u32))
+            .await
+            .expect("build paper adapters with futures default");
+        assert_eq!(adapters.primary.venue(), Venue::UsdsFutures);
+        assert!(adapters.secondary.is_some());
+
+        // Channel must remain open (Empty, NOT Disconnected) while event_tx_guard is held.
+        assert!(matches!(
+            adapters.event_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        // Verify event_tx_guard delivers events into event_rx.
+        adapters
+            .event_tx_guard
+            .send(GatewayEvent::StreamTerminated {
+                venue: Venue::UsdsFutures,
+                event_time_ms: 1_700_000_000_000,
+            })
+            .await
+            .expect("send through guard");
+        let received = adapters.event_rx.recv().await.expect("event must arrive");
+        assert!(matches!(
+            received,
+            GatewayEvent::StreamTerminated {
+                venue: Venue::UsdsFutures,
+                ..
+            }
+        ));
     }
 }

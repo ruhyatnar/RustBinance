@@ -26,6 +26,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+async-trait = "0.1.92"
 bot-types = { path = "crates/bot-types", version = "0.1.0" }
 figment = { version = "0.10.19", features = ["toml", "env"] }
 proptest = "1.11.0"

@@ -14,14 +14,17 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-async-trait = "0.1.89"
+async-trait.workspace = true
 bot-config = { path = "../bot-config", version = "0.1.0" }
 bot-engine = { path = "../bot-engine", version = "0.1.0" }
 bot-exchange = { path = "../bot-exchange", version = "0.1.0" }
 bot-exec = { path = "../bot-exec", version = "0.1.0" }
+bot-indicators = { path = "../bot-indicators", version = "0.1.0" }
 bot-ipc = { path = "../bot-ipc", version = "0.1.0" }
+bot-marketdata = { path = "../bot-marketdata", version = "0.1.0" }
 bot-risk = { path = "../bot-risk", version = "0.1.0" }
 bot-store = { path = "../bot-store", version = "0.1.0" }
+bot-strategy = { path = "../bot-strategy", version = "0.1.0" }
 bot-types = { workspace = true }
 bot-venue = { path = "../bot-venue", version = "0.1.0" }
 rust_decimal = { workspace = true }
@@ -32,8 +35,6 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-bot-marketdata = { path = "../bot-marketdata", version = "0.1.0" }
-bot-risk = { path = "../bot-risk", version = "0.1.0" }
 serde_json.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
