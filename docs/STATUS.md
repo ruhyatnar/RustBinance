@@ -1,8 +1,8 @@
 # STATUS
 
-**Milestone aktif:** Selesai (M00–M17 engineering/tooling tuntas; operasional G2–G5 Spot & Futures pending sebelum live per `ADR-0005`)
+**Milestone aktif:** Selesai (M00–M18 engineering/tooling tuntas; operasional G2–G5 Spot & Futures pending sebelum live per `ADR-0005`)
 **Mode build:** paper / testnet (tidak ada live)
-**Terakhir diperbarui:** 2026-11-25
+**Terakhir diperbarui:** 2026-11-26
 
 ## Progres
 - [x] **M00** — Scaffold, CI, Secret<T>, ADR  → `docs/milestones/M00-*.md`
@@ -23,11 +23,16 @@
 - [x] **M15** — FuturesAdapter  → `docs/milestones/M15-*.md`
 - [x] **M16** — VenueManager & peralihan Spot ⇄ Futures, Short  → `docs/milestones/M16-*.md`
 - [x] **M17** — OPERASIONAL: gerbang Futures; opsional dual (engineering/tooling & runbook selesai via `ADR-0005`; operasional G2–G5 Futures-Long/Short & `ADR-0006` mode `dual` pending sebelum live) → `docs/milestones/M17-*.md`
+- [x] **M18** — Exchange & Runtime Reliability Hardening (engineering tuntas; M19–M21 & operasional G2–G5 Spot/Futures pending sebelum live) → `docs/superpowers/specs/2026-11-26-m18-m21-prelive-ops-design.md`
 
 ## Pertanyaan terbuka (untuk pemilik)
 _(kosong)_
 
 ## Catatan sesi terakhir
+- **2026-11-26 (M18 — Exchange & Runtime Reliability Hardening):** selesaikan seluruh 7 tugas M18 (`docs/superpowers/plans/2026-11-26-m18-exchange-runtime-hardening.md`):
+  - `crates/bot-exchange`: `ClockSyncState` (`Option<i64>` membedakan belum sinkron vs offset `0 ms`) + `ping()` di Spot/Futures REST, klasifikasi error permanen Binance (`-1022`, `-2014`, `-4046`, `-4059`) + `is_retryable()`/`is_maintenance()`, ingesti header rate-limit REST (`X-MBX-USED-WEIGHT-*`/`X-MBX-ORDER-COUNT-*`) + `RateBudgetExceeded`/`can_place_order()`, dan `BalanceCache` WS-first dengan pelacakan `BalanceProvenance`.
+  - `crates/botd`, `crates/bot-engine`, `crates/bot-store`: `ProcessLock` single-instance via `File::try_lock()` (`binance-botd.<mode>.lock`), `SqliteStore::ping()` (`SELECT 1`), serta `HealthProbeRunner` + `EngineCommand::{SetMaintenancePaused, ReportDbHealth}` (auto-pause ke `Paused` saat maintenance tanpa membatalkan proteksi OCO/Algo, tidak pernah menurunkan `Halted`/`Killed`, tetap `Paused` pasca-pemulihan hingga `Resume` eksplisit operator).
+  - `crates/bot-config`: tambah uji drift CI `tests/config_drift.rs` memverifikasi `packaging/bot.toml.example` terurai ketat ke `BotConfig` dan lulus `load_from_paths` (`./scripts/verify.sh` hijau penuh). Catatan operasional: gerbang G2–G5 Spot & Futures tetap pending sebelum live.
 - **2026-11-25 (Redesign Web UI — Romer Hybrid):** merombak menyeluruh `web-ui/` berbasis referensi `stitch_romer_saas_dashboard.zip` (spec `docs/superpowers/specs/2026-11-25-web-ui-romer-redesign-design.md`, plan `docs/superpowers/plans/2026-11-25-web-ui-romer-redesign.md`): token Tailwind v4 `@theme` + font offline `@fontsource/manrope` & `@fontsource/inter`, 4 primitif UI (`Panel`, `KpiCard`, `StatusPill`, `PageHeader`), sidebar kiri terkelompok + drawer responsif (`lg:hidden`), `VenueSwitchDialog` dengan `HoldToConfirm` 1,5 detik untuk `flatten`, tema obsidian Lightweight Charts, filter venue `All | Spot | Futures` (menjaga event global `venue == null`), dan restyle seluruh 9 rute + `AuthGate`. `scripts/verify.sh` hijau penuh.
 - **2026-11-25 (Perbaikan Audit Lanjutan):** perbaiki temuan race TTL drain in-flight exec reports & mark unknown needs query saat `cancel_replace` network error di `crates/bot-exec/src/entry.rs`; perbaiki log terstruktur shutdown `botd/src/main.rs`; tambah regression test `execute_passive_entry_drains_in_flight_fill_on_timeout`; pasang Rust toolchain dan jalankan `scripts/verify.sh` penuh (semua pemeriksaan lulus).
 - **2026-11-25 (Audit repo ponytail):** perbaiki 5 temuan di `bot-exec` (`entry.rs`, `paper.rs`) & `botd` (guard `live_confirmation_file` non-kosong); `scripts/verify.sh` hijau. Belum teruji: tes kegagalan store pada `entry.rs`; jalur fill susulan setelah cancel TTL (andalkan rekonsiliasi). Terbuka: format isi konfirmasi live yang lebih ketat (butuh ADR).
