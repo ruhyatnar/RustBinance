@@ -113,6 +113,7 @@ async fn cli_end_to_end_json_output_is_valid_json_for_all_m19_commands() {
     let pair = generate_ed25519_keypair(dir.path(), "spot").unwrap();
     let api_key_file = dir.path().join("api_key.txt");
     fs::write(&api_key_file, "SUPER_SECRET_TEST_KEY\n").unwrap();
+    fs::set_permissions(&api_key_file, fs::Permissions::from_mode(0o600)).unwrap();
     let cfg_path = dir.path().join("bot.toml");
     fs::write(
         &cfg_path,
@@ -144,7 +145,7 @@ async fn cli_end_to_end_json_output_is_valid_json_for_all_m19_commands() {
         Cli {
             command: Command::Doctor {
                 config: Some(cfg_path.clone()),
-                socket: dir.path().join("missing.sock"),
+                socket: Some(dir.path().join("missing.sock")),
                 offline: true,
                 json: true,
             },
@@ -236,7 +237,7 @@ async fn review_c2_i1_doctor_fails_missing_config_and_rejects_public_key_as_priv
     // Missing explicit --config must FAIL, never silently fall back to BotConfig::default()
     let missing_rep = run_doctor(&DoctorOptions {
         config: Some(dir.path().join("does_not_exist.toml")),
-        socket: dir.path().join("missing.sock"),
+        socket: Some(dir.path().join("missing.sock")),
         spot_rest_url: None,
         futures_rest_url: None,
         offline: true,
@@ -269,7 +270,7 @@ async fn review_c2_i1_doctor_fails_missing_config_and_rejects_public_key_as_priv
 
     let pub_rep = run_doctor(&DoctorOptions {
         config: Some(cfg_path),
-        socket: dir.path().join("missing.sock"),
+        socket: Some(dir.path().join("missing.sock")),
         spot_rest_url: None,
         futures_rest_url: None,
         offline: true,
@@ -460,4 +461,57 @@ async fn review_i4_probe_signed_futures_counts_only_non_zero_balances() {
 
     assert!(rep.ok);
     assert_eq!(rep.non_zero_balances, 1);
+}
+
+#[tokio::test]
+async fn minor_doctor_flags_loose_api_key_permissions_and_uses_cfg_uds_path() {
+    use botctl::doctor::{CheckStatus, DoctorOptions, run_doctor};
+
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let pair = generate_ed25519_keypair(dir.path(), "spot").unwrap();
+    let api_key_file = dir.path().join("api_key.txt");
+    fs::write(&api_key_file, "dummy-key\n").unwrap();
+    fs::set_permissions(&api_key_file, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let custom_sock = dir.path().join("custom_bot.sock");
+    let cfg_path = dir.path().join("bot.toml");
+    fs::write(
+        &cfg_path,
+        format!(
+            "[general]\nmode = \"paper\"\n[ipc]\nuds_path = \"{}\"\n[venues.spot]\nenabled = true\napi_key_file = \"{}\"\nprivate_key_path = \"{}\"\n[venues.futures]\nenabled = false\n",
+            custom_sock.display(),
+            api_key_file.display(),
+            pair.private_path.display()
+        ),
+    )
+    .unwrap();
+
+    let rep = run_doctor(&DoctorOptions {
+        config: Some(cfg_path),
+        socket: None,
+        spot_rest_url: None,
+        futures_rest_url: None,
+        offline: true,
+    })
+    .await;
+
+    assert!(!rep.overall_ok);
+    assert!(
+        rep.checks
+            .iter()
+            .any(|c| c.name == "spot_api_key_file" && c.status == CheckStatus::Fail),
+        "loose 0644 api_key_file must FAIL doctor: {:?}",
+        rep.checks
+    );
+    let uds = rep
+        .checks
+        .iter()
+        .find(|c| c.name == "daemon_uds")
+        .expect("daemon_uds check");
+    assert!(
+        uds.detail.contains("custom_bot.sock"),
+        "doctor should fall back to cfg.ipc.uds_path: {}",
+        uds.detail
+    );
 }

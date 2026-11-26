@@ -187,10 +187,12 @@ impl SpotRestClient {
         interval: &str,
         limit: u16,
     ) -> Result<Vec<Kline>, GatewayError> {
-        let url = format!(
-            "{}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
-            self.base_url
-        );
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("symbol", symbol)
+            .append_pair("interval", interval)
+            .append_pair("limit", &limit.to_string())
+            .finish();
+        let url = format!("{}/api/v3/klines?{query}", self.base_url);
         let resp = self
             .http
             .get(&url)
@@ -251,6 +253,7 @@ pub fn parse_rest_klines(raw: &str, now_ms: i64) -> Result<Vec<Kline>, GatewayEr
                 row.get(i)
                     .and_then(serde_json::Value::as_str)
                     .and_then(|s| s.parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
                     .ok_or_else(bad)
             };
             let close_time_ms = int(6)?;
@@ -693,6 +696,22 @@ mod probe_tests {
         // Last bar still forming at now=2500 (close_time 2999).
         assert!(!bars.get(1).unwrap().is_closed);
         assert!(parse_rest_klines(r#"[[1000,"x"]]"#, 0).is_err());
+        assert!(
+            parse_rest_klines(
+                r#"[[1000,"NaN","2.0","0.5","1.5","10",1999,"15",7,"4","6","0"]]"#,
+                2500
+            )
+            .is_err(),
+            "NaN OHLCV must be rejected"
+        );
+        assert!(
+            parse_rest_klines(
+                r#"[[1000,"1.0","Infinity","0.5","1.5","10",1999,"15",7,"4","6","0"]]"#,
+                2500
+            )
+            .is_err(),
+            "Infinity OHLCV must be rejected"
+        );
     }
 
     #[tokio::test]

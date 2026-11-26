@@ -87,6 +87,12 @@ fn read_pem(path: &Path) -> Result<Zeroizing<String>> {
         .with_context(|| format!("failed to read key file {}", path.display()))
 }
 
+/// Returns `true` when directory permissions grant no group/other access and keep owner read+exec (`0700` or `0500`).
+#[must_use]
+pub(crate) const fn is_private_dir_mode_ok(dir_mode: u32) -> bool {
+    dir_mode.trailing_zeros() >= 6 && (dir_mode & 0o500) == 0o500
+}
+
 /// Compute `SHA256:<hex>` fingerprint of the Ed25519 public key in a public or private PEM.
 ///
 /// # Errors
@@ -133,8 +139,8 @@ pub fn inspect_key_file(path: &Path) -> Result<KeyInspection> {
     // Unknown files are treated as potentially secret: apply private-key policy.
     let strict = kind != KeyFileKind::PublicSpki;
     let file_mode_ok = !strict || file_mode == PRIVATE_KEY_MODE;
-    // Directory must grant no group/other bits (low 6 bits zero, i.e. `0700` or stricter).
-    let dir_mode_ok = !strict || dir_mode.trailing_zeros() >= 6;
+    // Directory must grant no group/other bits and retain owner read+exec (`0700` or `0500`).
+    let dir_mode_ok = !strict || is_private_dir_mode_ok(dir_mode);
     if !file_mode_ok {
         issues.push(format!(
             "private key mode is {file_mode:04o}, expected 0600 (chmod 600 {})",
@@ -246,5 +252,14 @@ mod tests {
         assert!(!rep.pem_valid);
         let json = serde_json::to_string(&rep).unwrap();
         assert!(!json.contains("SECRET_SENTINEL_DO_NOT_LEAK"));
+    }
+
+    #[test]
+    fn dir_mode_policy_accepts_0700_and_0500_but_rejects_0000_and_0755() {
+        assert!(super::is_private_dir_mode_ok(0o700));
+        assert!(super::is_private_dir_mode_ok(0o500));
+        assert!(!super::is_private_dir_mode_ok(0o000));
+        assert!(!super::is_private_dir_mode_ok(0o755));
+        assert!(!super::is_private_dir_mode_ok(0o750));
     }
 }

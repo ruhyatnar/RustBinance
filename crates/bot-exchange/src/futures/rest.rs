@@ -297,10 +297,12 @@ impl FuturesRestClient {
         interval: &str,
         limit: u16,
     ) -> Result<Vec<bot_types::Kline>, GatewayError> {
-        let url = format!(
-            "{}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
-            self.base_url
-        );
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("symbol", symbol)
+            .append_pair("interval", interval)
+            .append_pair("limit", &limit.to_string())
+            .finish();
+        let url = format!("{}/fapi/v1/klines?{query}", self.base_url);
         let resp = self
             .http
             .get(&url)

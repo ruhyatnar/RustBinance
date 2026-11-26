@@ -5,6 +5,7 @@
 //! issue in one invocation. Never prints private key or API key contents.
 
 use std::fmt::Write as _;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,8 +15,9 @@ use bot_exchange::{FuturesRestClient, RateLimitTracker, SpotRestClient};
 use bot_types::TradingMode;
 use serde::Serialize;
 
+use crate::cli::DEFAULT_SOCKET_PATH;
 use crate::client::UdsClient;
-use crate::key_audit::{KeyFileKind, inspect_key_file};
+use crate::key_audit::{KeyFileKind, PRIVATE_KEY_MODE, inspect_key_file};
 
 const REST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -85,8 +87,8 @@ impl DoctorReport {
 pub struct DoctorOptions {
     /// Optional explicit TOML configuration file path.
     pub config: Option<PathBuf>,
-    /// Daemon Unix domain socket path.
-    pub socket: PathBuf,
+    /// Optional daemon Unix domain socket path override (defaults to `cfg.ipc.uds_path`).
+    pub socket: Option<PathBuf>,
     /// Optional Spot REST base URL override (primarily for tests/custom endpoints).
     pub spot_rest_url: Option<String>,
     /// Optional Futures REST base URL override (primarily for tests/custom endpoints).
@@ -146,7 +148,12 @@ pub async fn run_doctor(opts: &DoctorOptions) -> DoctorReport {
     }
 
     let mode = cfg.as_ref().map_or(TradingMode::Paper, |c| c.general.mode);
-    check_daemon_uds(&opts.socket, mode, &mut checks).await;
+    let socket = opts
+        .socket
+        .clone()
+        .or_else(|| cfg.as_ref().map(|c| PathBuf::from(&c.ipc.uds_path)))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
+    check_daemon_uds(&socket, mode, &mut checks).await;
 
     let overall_ok = checks.iter().all(|c| c.status != CheckStatus::Fail);
     DoctorReport {
@@ -209,12 +216,25 @@ fn check_single_venue_files(
     let api_path = Path::new(api_key_file);
     match std::fs::read_to_string(api_path) {
         Ok(contents) if !contents.trim().is_empty() => {
-            checks.push(DoctorCheck {
-                name: format!("{label}_api_key_file"),
-                status: CheckStatus::Pass,
-                detail: format!("present and non-empty ({api_key_file})"),
-                hint: None,
-            });
+            let file_mode =
+                std::fs::metadata(api_path).map_or(0, |m| m.permissions().mode() & 0o777);
+            if file_mode == PRIVATE_KEY_MODE {
+                checks.push(DoctorCheck {
+                    name: format!("{label}_api_key_file"),
+                    status: CheckStatus::Pass,
+                    detail: format!("present, non-empty, mode {file_mode:04o} ({api_key_file})"),
+                    hint: None,
+                });
+            } else {
+                checks.push(DoctorCheck {
+                    name: format!("{label}_api_key_file"),
+                    status: CheckStatus::Fail,
+                    detail: format!(
+                        "API key file mode is {file_mode:04o}, expected 0600 ({api_key_file})"
+                    ),
+                    hint: Some(format!("restrict permissions: `chmod 600 {api_key_file}`")),
+                });
+            }
         }
         Ok(_) => {
             checks.push(DoctorCheck {
@@ -515,6 +535,7 @@ mod tests {
         let pair = generate_ed25519_keypair(dir.path(), "spot").unwrap();
         let api_key_file = dir.path().join("api_key.txt");
         fs::write(&api_key_file, "dummy-testnet-api-key\n").unwrap();
+        fs::set_permissions(&api_key_file, fs::Permissions::from_mode(0o600)).unwrap();
 
         let cfg_path = dir.path().join("bot.toml");
         fs::write(
@@ -529,7 +550,7 @@ mod tests {
 
         let report = run_doctor(&DoctorOptions {
             config: Some(cfg_path),
-            socket: dir.path().join("missing.sock"),
+            socket: Some(dir.path().join("missing.sock")),
             spot_rest_url: None,
             futures_rest_url: None,
             offline: true,
@@ -583,7 +604,7 @@ mod tests {
 
         let report = run_doctor(&DoctorOptions {
             config: Some(cfg_path),
-            socket: dir.path().join("missing.sock"),
+            socket: Some(dir.path().join("missing.sock")),
             spot_rest_url: None,
             futures_rest_url: None,
             offline: true,
@@ -651,7 +672,7 @@ mod tests {
 
         let report = run_doctor(&DoctorOptions {
             config: Some(cfg_path),
-            socket: dir.path().join("missing.sock"),
+            socket: Some(dir.path().join("missing.sock")),
             spot_rest_url: Some(format!("http://{addr}")),
             futures_rest_url: None,
             offline: false,

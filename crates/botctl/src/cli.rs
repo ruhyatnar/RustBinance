@@ -49,9 +49,9 @@ pub enum Command {
         /// Optional explicit TOML configuration file path.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Path to daemon Unix domain socket.
-        #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
-        socket: PathBuf,
+        /// Optional daemon Unix domain socket path (defaults to `ipc.uds_path` from config).
+        #[arg(long)]
+        socket: Option<PathBuf>,
         /// Skip remote REST `/ping` and `/time` checks.
         #[arg(long)]
         offline: bool,

@@ -166,8 +166,10 @@ pub(crate) fn load_venue_credentials(cfg: &BotConfig, venue: Venue) -> Result<Ed
             &cfg.venues.futures.private_key_path,
         ),
     };
-    let raw_key = std::fs::read_to_string(api_key_file)
-        .with_context(|| format!("failed to read API key file {api_key_file}"))?;
+    let raw_key = zeroize::Zeroizing::new(
+        std::fs::read_to_string(api_key_file)
+            .with_context(|| format!("failed to read API key file {api_key_file}"))?,
+    );
     let api_key = raw_key.trim().to_owned();
     if api_key.is_empty() {
         bail!("API key file {api_key_file} is empty");
