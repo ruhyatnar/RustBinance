@@ -10,7 +10,7 @@ use bot_exchange::{
 use bot_store::{JournalEnvelope, JournalEvent, PersistedEngineState, SqliteStore};
 use bot_types::{
     Direction, InstrumentRules, OrderKind, OrderPurpose, OrderStatus, Position, PositionState,
-    Price, Qty, Side, StrategyId, Symbol, Venue, floor_to_step,
+    Price, Qty, Side, StrategyId, Symbol, Venue, floor_to_step, floor_to_tick,
 };
 use rust_decimal::Decimal;
 use thiserror::Error;
@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::client_id::format_client_order_id;
 use crate::fsm::{OrderFsm, is_terminal};
+use crate::futures_protection::{AlgoProtectionManager, AlgoProtectionState, closing_side};
 use crate::protection::{DualOcoManager, ProtectionError};
 
 /// Summary report produced by [`reconcile_venue`].
@@ -83,13 +84,46 @@ pub struct ReconcileConfig {
 ///
 /// # Errors
 /// Returns [`ReconcileError`] on store or exchange errors.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub async fn reconcile_venue<G: ExchangeGateway + ?Sized>(
     gateway: &G,
     store: &mut SqliteStore,
     state: &mut PersistedEngineState,
     fsm: &mut OrderFsm,
     oco_mgr: &mut DualOcoManager,
+    rules_by_symbol: &BTreeMap<Symbol, InstrumentRules>,
+    ref_prices: &BTreeMap<Symbol, Price>,
+    cfg: &ReconcileConfig,
+    now_ms: i64,
+) -> Result<ReconcileReport, ReconcileError> {
+    reconcile_venue_with_futures(
+        gateway,
+        store,
+        state,
+        fsm,
+        oco_mgr,
+        None,
+        rules_by_symbol,
+        ref_prices,
+        cfg,
+        now_ms,
+    )
+    .await
+}
+
+/// Run §8.3 startup/periodic reconciliation for a single venue, optionally tracking
+/// USDⓈ-M Futures [`AlgoProtectionState`] handles in `futures_protections`.
+///
+/// # Errors
+/// Returns [`ReconcileError`] on store or exchange errors.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub async fn reconcile_venue_with_futures<G: ExchangeGateway + ?Sized>(
+    gateway: &G,
+    store: &mut SqliteStore,
+    state: &mut PersistedEngineState,
+    fsm: &mut OrderFsm,
+    oco_mgr: &mut DualOcoManager,
+    mut futures_protections: Option<&mut BTreeMap<Uuid, AlgoProtectionState>>,
     rules_by_symbol: &BTreeMap<Symbol, InstrumentRules>,
     ref_prices: &BTreeMap<Symbol, Price>,
     cfg: &ReconcileConfig,
@@ -310,18 +344,39 @@ pub async fn reconcile_venue<G: ExchangeGateway + ?Sized>(
                 let seq = store.append_event(now_ms, &env)?;
                 state.apply_event(seq, &env);
                 store.upsert_position(&pos, None, None)?;
-                oco_mgr
-                    .install_dual_oco(
-                        gateway,
-                        store,
-                        &pos,
-                        rules,
-                        cfg.tp1_close_ratio,
-                        &cfg.bot_id,
-                        cfg.run_id,
-                        now_ms,
-                    )
-                    .await?;
+                match cfg.venue {
+                    Venue::Spot => {
+                        let prot = oco_mgr
+                            .install_dual_oco(
+                                gateway,
+                                store,
+                                &pos,
+                                rules,
+                                cfg.tp1_close_ratio,
+                                &cfg.bot_id,
+                                cfg.run_id,
+                                now_ms,
+                            )
+                            .await?;
+                        if let Some(jseq) = prot.last_journal_seq {
+                            let stop_env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
+                                venue: pos.venue,
+                                position_id: pos.id,
+                                new_stop_price: prot.installed_stop,
+                                breakeven_done: pos.breakeven_done,
+                            });
+                            state.apply_event(jseq, &stop_env);
+                        }
+                    }
+                    Venue::UsdsFutures => {
+                        let algo_state =
+                            install_futures_algo_protection(gateway, store, &pos, rules, cfg)
+                                .await?;
+                        if let Some(map) = futures_protections.as_deref_mut() {
+                            map.insert(pos.id, algo_state);
+                        }
+                    }
+                }
             }
         }
     }
@@ -341,25 +396,111 @@ pub async fn reconcile_venue<G: ExchangeGateway + ?Sized>(
         .collect();
 
     for pos in open_positions {
-        let has_exchange_sell = exchange_open
-            .iter()
-            .any(|o| o.symbol == pos.symbol && o.side == Side::Sell && o.order_list_id >= 0);
-        if !has_exchange_sell && let Some(rules) = rules_by_symbol.get(&pos.symbol) {
-            oco_mgr
-                .install_dual_oco(
-                    gateway,
-                    store,
-                    &pos,
-                    rules,
-                    cfg.tp1_close_ratio,
-                    &cfg.bot_id,
-                    cfg.run_id,
-                    now_ms,
-                )
-                .await?;
-            report.protections_reinstalled += 1;
+        let Some(rules) = rules_by_symbol.get(&pos.symbol) else {
+            continue;
+        };
+        match cfg.venue {
+            Venue::Spot => {
+                let has_exchange_sell = exchange_open.iter().any(|o| {
+                    o.symbol == pos.symbol && o.side == Side::Sell && o.order_list_id >= 0
+                });
+                if !has_exchange_sell {
+                    let prot = oco_mgr
+                        .install_dual_oco(
+                            gateway,
+                            store,
+                            &pos,
+                            rules,
+                            cfg.tp1_close_ratio,
+                            &cfg.bot_id,
+                            cfg.run_id,
+                            now_ms,
+                        )
+                        .await?;
+                    if let Some(jseq) = prot.last_journal_seq {
+                        let stop_env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
+                            venue: pos.venue,
+                            position_id: pos.id,
+                            new_stop_price: prot.installed_stop,
+                            breakeven_done: pos.breakeven_done,
+                        });
+                        state.apply_event(jseq, &stop_env);
+                    }
+                    report.protections_reinstalled += 1;
+                }
+            }
+            Venue::UsdsFutures => {
+                let pos_side = match pos.direction {
+                    Direction::Long => Side::Buy,
+                    Direction::Short => Side::Sell,
+                };
+                let exit_side = closing_side(pos_side);
+                let has_local_algo = futures_protections
+                    .as_deref()
+                    .is_some_and(|m| m.contains_key(&pos.id));
+                let has_exchange_stop = exchange_open.iter().any(|o| {
+                    o.symbol == pos.symbol
+                        && o.side == exit_side
+                        && matches!(
+                            o.kind,
+                            OrderKind::StopLossLimit | OrderKind::TakeProfitLimit
+                        )
+                });
+                if !has_local_algo && !has_exchange_stop {
+                    let algo_state =
+                        install_futures_algo_protection(gateway, store, &pos, rules, cfg).await?;
+                    if let Some(map) = futures_protections.as_deref_mut() {
+                        map.insert(pos.id, algo_state);
+                    }
+                    report.protections_reinstalled += 1;
+                }
+            }
         }
     }
 
     Ok(report)
+}
+
+async fn install_futures_algo_protection<G: ExchangeGateway + ?Sized>(
+    gateway: &G,
+    store: &mut SqliteStore,
+    pos: &Position,
+    rules: &InstrumentRules,
+    cfg: &ReconcileConfig,
+) -> Result<AlgoProtectionState, ReconcileError> {
+    let sl_seq = store.next_order_seq()?;
+    let sl_cid = format_client_order_id(
+        &cfg.bot_id,
+        cfg.run_id,
+        pos.venue,
+        sl_seq,
+        OrderPurpose::ProtectStop,
+    )?;
+    let tp_seq = store.next_order_seq()?;
+    let tp_cid = format_client_order_id(
+        &cfg.bot_id,
+        cfg.run_id,
+        pos.venue,
+        tp_seq,
+        OrderPurpose::TakeProfit1,
+    )?;
+    let pos_side = match pos.direction {
+        Direction::Long => Side::Buy,
+        Direction::Short => Side::Sell,
+    };
+    let sl_px = floor_to_tick(pos.stop_price, rules.tick_size)?;
+    let tp_px = floor_to_tick(pos.tp1_price, rules.tick_size)?;
+    let algo_state = AlgoProtectionManager
+        .install_protection(
+            gateway,
+            pos.symbol.clone(),
+            pos_side,
+            pos.qty_open,
+            sl_px,
+            Some(tp_px),
+            sl_cid,
+            Some(tp_cid),
+        )
+        .await?;
+    Ok(algo_state)
 }

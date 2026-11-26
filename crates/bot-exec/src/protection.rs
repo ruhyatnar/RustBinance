@@ -51,6 +51,8 @@ pub struct PositionProtection {
     pub installed_stop: Price,
     /// Consecutive protection reinstall failures (2× → `EmergencyExit` per §5.5 #1).
     pub reinstall_failures: u32,
+    /// SQLite journal sequence number of the latest `PositionStopMoved` event written for this protection.
+    pub last_journal_seq: Option<i64>,
 }
 
 impl PositionProtection {
@@ -102,6 +104,7 @@ impl DualOcoManager {
                 oco_b_list_cid: None,
                 installed_stop: fallback_stop,
                 reinstall_failures: 0,
+                last_journal_seq: None,
             });
         entry.reinstall_failures = entry.reinstall_failures.saturating_add(1);
         entry.reinstall_failures
@@ -179,7 +182,7 @@ impl DualOcoManager {
             new_stop_price: stop_px,
             breakeven_done: pos.breakeven_done,
         });
-        store.append_event(ts_ms, &journal_env)?;
+        let journal_seq = store.append_event(ts_ms, &journal_env)?;
 
         let prot = if can_split {
             let (aid, acid) = place_single_oco(
@@ -207,6 +210,7 @@ impl DualOcoManager {
                     oco_b_list_cid: None,
                     installed_stop: stop_px,
                     reinstall_failures: 0,
+                    last_journal_seq: Some(journal_seq),
                 },
             );
 
@@ -232,6 +236,7 @@ impl DualOcoManager {
                 oco_b_list_cid: Some(bcid),
                 installed_stop: stop_px,
                 reinstall_failures: 0,
+                last_journal_seq: Some(journal_seq),
             }
         } else {
             let tp_px = if pos.tp1_done { tp2_px } else { tp1_px };
@@ -262,6 +267,7 @@ impl DualOcoManager {
                 oco_b_list_cid: Some(bcid),
                 installed_stop: stop_px,
                 reinstall_failures: 0,
+                last_journal_seq: Some(journal_seq),
             }
         };
 
@@ -341,7 +347,7 @@ impl DualOcoManager {
             new_stop_price: stop_px,
             breakeven_done,
         });
-        store.append_event(ts_ms, &env)?;
+        let journal_seq = store.append_event(ts_ms, &env)?;
 
         let entry = self
             .protections
@@ -353,11 +359,13 @@ impl DualOcoManager {
                 oco_b_list_cid: None,
                 installed_stop: stop_px,
                 reinstall_failures: 0,
+                last_journal_seq: Some(journal_seq),
             });
         entry.oco_b_list_id = Some(bid);
         entry.oco_b_list_cid = Some(bcid);
         entry.installed_stop = stop_px;
         entry.reinstall_failures = 0;
+        entry.last_journal_seq = Some(journal_seq);
 
         Ok(entry.clone())
     }

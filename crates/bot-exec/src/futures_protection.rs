@@ -48,9 +48,9 @@ impl AlgoProtectionManager {
     /// # Errors
     /// Returns [`GatewayError`] if the exchange rejects the SL or TP placement.
     #[allow(clippy::too_many_arguments)]
-    pub async fn install_protection(
+    pub async fn install_protection<G: ExchangeGateway + ?Sized>(
         &self,
-        gw: &dyn ExchangeGateway,
+        gw: &G,
         symbol: Symbol,
         position_side: Side,
         qty: Qty,
@@ -121,9 +121,9 @@ impl AlgoProtectionManager {
     ///
     /// # Errors
     /// Returns [`GatewayError`] if placing the new SL or canceling the old SL fails.
-    pub async fn move_stop_make_before_break(
+    pub async fn move_stop_make_before_break<G: ExchangeGateway + ?Sized>(
         &self,
-        gw: &dyn ExchangeGateway,
+        gw: &G,
         state: &mut AlgoProtectionState,
         new_sl_price: Price,
         new_sl_client_id: String,
@@ -171,9 +171,9 @@ impl AlgoProtectionManager {
     ///
     /// # Errors
     /// Returns [`GatewayError`] if the exchange rejects the trailing order.
-    pub async fn install_trailing_stop(
+    pub async fn install_trailing_stop<G: ExchangeGateway + ?Sized>(
         &self,
-        gw: &dyn ExchangeGateway,
+        gw: &G,
         state: &mut AlgoProtectionState,
         qty: Qty,
         activate_price: Price,

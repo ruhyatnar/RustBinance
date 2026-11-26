@@ -6,14 +6,14 @@ use std::sync::Arc;
 
 use bot_config::BotConfig;
 use bot_exchange::{
-    CancelAlgoOrderRequest, CancelOrderListRequest, CancelOrderRequest, GatewayError, GatewayEvent,
-    PlaceOrderRequest, TimeInForce, VenueAdapter,
+    CancelAlgoOrderRequest, CancelOrderListRequest, CancelOrderRequest, ExchangeErrorKind,
+    GatewayError, GatewayEvent, PlaceOrderRequest, TimeInForce, VenueAdapter,
 };
 use bot_exec::futures_protection::{AlgoProtectionManager, AlgoProtectionState};
 use bot_exec::{
     DualOcoManager, FsmApplyOutcome, HardStopWatcher, LifecycleAction, OrderFsm, PositionTickInput,
-    ReconcileConfig, ReconcileReport, evaluate_position_tick, format_client_order_id, is_terminal,
-    reconcile_venue,
+    ReconcileConfig, ReconcileReport, convert_fee_to_quote, evaluate_position_tick,
+    format_client_order_id, is_terminal, reconcile_venue_with_futures,
 };
 use bot_risk::{
     BtcCrashGuard, BtcMarketSample, BtcSpikeGuard, BtcSpikeSample, CombinedEquityCounters,
@@ -22,11 +22,11 @@ use bot_risk::{
     RejectReason,
 };
 use bot_store::{
-    JournalEnvelope, JournalEvent, PersistedEngineState, SqliteStore, VenueStateRecord,
+    FillRecord, JournalEnvelope, JournalEvent, PersistedEngineState, SqliteStore, VenueStateRecord,
 };
 use bot_types::{
     Direction, EngineMode, InstrumentRules, Order, OrderKind, OrderPurpose, OrderStatus, Position,
-    PositionState, Price, Qty, Symbol, Venue, VenueState,
+    PositionState, Price, Qty, Side, Symbol, Venue, VenueState,
 };
 use bot_venue::{SwitchConfig, SwitchPolicy, SwitchPrecheckContext, VenueManager};
 use rust_decimal::Decimal;
@@ -47,6 +47,17 @@ use crate::helpers::{
 pub const COMMAND_CHANNEL_CAPACITY: usize = 64;
 /// Bounded user-data event channel capacity (§3.3: 4096, never drop).
 pub const USER_EVENT_CHANNEL_CAPACITY: usize = 4096;
+/// Default time-to-live (ms) for unfilled passive entry orders before automatic cancellation (§5.4).
+pub const DEFAULT_ENTRY_TTL_MS: i64 = 60_000;
+
+/// Per-position accumulator for exit fills observed via `ExecEvent` so VWAP exit price
+/// and fee deductions are exact across partial and final exits without double-counting.
+#[derive(Debug, Default, Clone)]
+struct ExitFillAccum {
+    exit_qty: Decimal,
+    exit_notional: Decimal,
+    fees_deducted_from_pnl: Decimal,
+}
 
 /// Errors returned by [`EngineHandle`] when sending commands to [`EngineActor`].
 #[derive(Debug, Error)]
@@ -170,8 +181,42 @@ pub struct EngineFullSnapshot {
     pub positions: Vec<Position>,
     /// Currently active (non-terminal) orders across all venues.
     pub orders: Vec<Order>,
+    /// Latest mark/reference prices keyed by `(Venue, Symbol)`.
+    pub ref_prices: BTreeMap<(Venue, Symbol), Price>,
     /// Current live risk limits (may have been tightened at runtime).
     pub config: BotConfig,
+}
+
+impl EngineFullSnapshot {
+    /// Compute `(mark_price, unrealized_pnl_quote, profit_r)` for `pos` using latest `ref_prices`
+    /// (falling back to `pos.best_price` if no market tick has arrived yet for that symbol).
+    #[must_use]
+    pub fn position_mark_metrics(&self, pos: &Position) -> (Price, Decimal, Decimal) {
+        let mark = self
+            .ref_prices
+            .get(&(pos.venue, pos.symbol.clone()))
+            .copied()
+            .unwrap_or(pos.best_price);
+        let unrealized =
+            compute_gross_realized_pnl(pos.direction, pos.entry_price, mark, pos.qty_open);
+        let profit_r = if pos.r_distance > Decimal::ZERO {
+            let signed_diff = match pos.direction {
+                Direction::Long => mark
+                    .as_decimal()
+                    .saturating_sub(pos.entry_price.as_decimal()),
+                Direction::Short => pos
+                    .entry_price
+                    .as_decimal()
+                    .saturating_sub(mark.as_decimal()),
+            };
+            signed_diff
+                .checked_div(pos.r_distance)
+                .unwrap_or(Decimal::ZERO)
+        } else {
+            Decimal::ZERO
+        };
+        (mark, unrealized, profit_r)
+    }
 }
 
 /// Summary returned after a completed runtime venue switch (§3.5).
@@ -630,6 +675,9 @@ pub struct EngineActor {
     rules_by_venue_symbol: BTreeMap<(Venue, Symbol), InstrumentRules>,
     ref_prices: BTreeMap<(Venue, Symbol), Price>,
     free_quote_usd: Decimal,
+    entry_ttl_ms: i64,
+    pending_entry_deadlines: BTreeMap<(Venue, String), i64>,
+    exit_fills: BTreeMap<Uuid, ExitFillAccum>,
     telemetry_tx: watch::Sender<TelemetrySnapshot>,
 }
 
@@ -678,13 +726,15 @@ impl EngineActor {
             .find(|b| b.asset.eq_ignore_ascii_case(&quote_asset))
             .map_or(initial_equity_usd, |b| b.free);
 
+        let mut futures_protections = BTreeMap::new();
         let ref_prices_reconcile = BTreeMap::new();
-        let _rep = reconcile_venue(
+        let _rep = reconcile_venue_with_futures(
             adapter.as_ref(),
             &mut store,
             &mut state,
             &mut fsm,
             &mut oco_mgr,
+            Some(&mut futures_protections),
             &rules_by_symbol,
             &ref_prices_reconcile,
             &ReconcileConfig {
@@ -736,6 +786,20 @@ impl EngineActor {
         };
         let (telemetry_tx, _) = watch::channel(initial_tel);
 
+        let pending_entry_deadlines: BTreeMap<(Venue, String), i64> = state
+            .orders
+            .values()
+            .filter(|o| o.purpose == OrderPurpose::Entry && !is_terminal(o.status))
+            .map(|o| {
+                let created_ms = i64::try_from(o.created_at.unix_timestamp_nanos() / 1_000_000)
+                    .unwrap_or(now_ms);
+                (
+                    (o.venue, o.client_id.clone()),
+                    created_ms.saturating_add(DEFAULT_ENTRY_TTL_MS),
+                )
+            })
+            .collect();
+
         Ok(Self {
             config,
             venue,
@@ -761,13 +825,23 @@ impl EngineActor {
             last_switch_ms: 0,
             fsm,
             oco_mgr,
-            futures_protections: BTreeMap::new(),
+            futures_protections,
             watcher: HardStopWatcher::new(),
             rules_by_venue_symbol,
             ref_prices: BTreeMap::new(),
             free_quote_usd,
+            entry_ttl_ms: DEFAULT_ENTRY_TTL_MS,
+            pending_entry_deadlines,
+            exit_fills: BTreeMap::new(),
             telemetry_tx,
         })
+    }
+
+    /// Override the default entry order TTL in milliseconds (must be positive).
+    #[must_use]
+    pub fn with_entry_ttl_ms(mut self, ttl_ms: i64) -> Self {
+        self.entry_ttl_ms = ttl_ms.max(1);
+        self
     }
 
     /// Spawn the single-writer [`EngineActor`] loop and return `(EngineHandle, JoinHandle)`.
@@ -1153,6 +1227,7 @@ impl EngineActor {
             btc_guard,
             positions: open_positions,
             orders: active_orders,
+            ref_prices: self.ref_prices.clone(),
             config: self.config.clone(),
         }
     }
@@ -1219,6 +1294,7 @@ impl EngineActor {
             .map(|o| (o.venue, o.symbol.clone(), o.client_id.clone()))
             .collect();
         for (v, sym, cid) in pending_entries {
+            self.pending_entry_deadlines.remove(&(v, cid.clone()));
             if let Some(adp) = self.adapter_for_venue(v) {
                 let _ = adp
                     .cancel_order(CancelOrderRequest {
@@ -1352,6 +1428,7 @@ impl EngineActor {
                 .is_ok()
             {
                 canceled_entry_orders = canceled_entry_orders.saturating_add(1);
+                self.pending_entry_deadlines.remove(&(old_venue, cid));
             }
         }
 
@@ -1413,12 +1490,13 @@ impl EngineActor {
 
         let target_refs = self.ref_prices_for_venue(target);
         let quote_asset = self.quote_asset().to_owned();
-        if let Err(err) = reconcile_venue(
+        if let Err(err) = reconcile_venue_with_futures(
             target_adapter.as_ref(),
             &mut self.store,
             &mut self.state,
             &mut self.fsm,
             &mut self.oco_mgr,
+            Some(&mut self.futures_protections),
             &target_rules_map,
             &target_refs,
             &ReconcileConfig {
@@ -1752,6 +1830,12 @@ impl EngineActor {
                 if let Ok(s) = self.store.append_event(now_ms, &upd_env) {
                     self.state.apply_event(s, &upd_env);
                 }
+                if !is_terminal(ack.status) {
+                    self.pending_entry_deadlines.insert(
+                        (intent.venue, cid.clone()),
+                        now_ms.saturating_add(self.entry_ttl_ms),
+                    );
+                }
                 EntrySubmissionResult::Submitted {
                     client_order_id: cid,
                     position_id: pos_id,
@@ -1778,21 +1862,32 @@ impl EngineActor {
             return Err(format!("no adapter for venue {:?}", pos.venue));
         };
         match pos.venue {
-            Venue::Spot => self
-                .oco_mgr
-                .install_dual_oco(
-                    adp.as_ref(),
-                    &mut self.store,
-                    pos,
-                    rules,
-                    self.config.strategy.trend_pullback.tp1_close_ratio,
-                    &self.bot_id,
-                    self.run_id,
-                    ts_ms,
-                )
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
+            Venue::Spot => {
+                let prot = self
+                    .oco_mgr
+                    .install_dual_oco(
+                        adp.as_ref(),
+                        &mut self.store,
+                        pos,
+                        rules,
+                        self.config.strategy.trend_pullback.tp1_close_ratio,
+                        &self.bot_id,
+                        self.run_id,
+                        ts_ms,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if let Some(seq) = prot.last_journal_seq {
+                    let stop_env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
+                        venue: pos.venue,
+                        position_id: pos.id,
+                        new_stop_price: prot.installed_stop,
+                        breakeven_done: pos.breakeven_done,
+                    });
+                    self.state.apply_event(seq, &stop_env);
+                }
+                Ok(())
+            }
             Venue::UsdsFutures => {
                 let sl_seq = self.store.next_order_seq().map_err(|e| e.to_string())?;
                 let sl_cid = format_client_order_id(
@@ -1839,101 +1934,207 @@ impl EngineActor {
             GatewayEvent::Exec(exec) => {
                 let quote = self.quote_asset().to_owned();
                 let outcome = self.fsm.apply_exec_event(&exec, &quote, None);
-                if let FsmApplyOutcome::Updated {
-                    status,
-                    new_fill,
-                    fee_quote,
-                } = outcome
-                {
-                    if let Some(fill) = new_fill {
-                        let _ = self.store.upsert_fill(&fill);
-                        let env = JournalEnvelope::new(JournalEvent::FillRecorded { fill });
-                        if let Ok(seq) = self.store.append_event(exec.event_time_ms, &env) {
-                            self.state.apply_event(seq, &env);
-                        }
-                    }
-
-                    let tracked = self.fsm.get(exec.venue, &exec.client_order_id).cloned();
-                    if let Some(ord) = tracked {
-                        let upd_env = JournalEnvelope::new(JournalEvent::OrderStatusUpdated {
-                            venue: ord.venue,
-                            client_id: ord.client_id.clone(),
-                            exchange_id: ord.exchange_id,
-                            status,
-                            filled_qty: ord.filled_qty,
-                            avg_fill_price: ord.avg_fill_price,
-                            updated_at: ord.updated_at,
-                        });
-                        if let Ok(seq) = self.store.append_event(exec.event_time_ms, &upd_env) {
-                            self.state.apply_event(seq, &upd_env);
-                        }
-                        let _ = self.store.upsert_order(&ord);
-
-                        // Entry filled or partially filled -> install protection FIRST, then record OpenProtected/OpenUnprotected!
-                        let has_fill_qty = ord.filled_qty.as_decimal() > Decimal::ZERO;
-                        let entry_needs_protection = ord.purpose == OrderPurpose::Entry
-                            && has_fill_qty
-                            && matches!(status, OrderStatus::Filled | OrderStatus::PartiallyFilled);
-                        if entry_needs_protection
-                            && let Some(pos_id) = ord.position_id
-                            && let Some(mut pos) = self.state.positions.get(&pos_id).cloned()
-                        {
-                            let already_protected = pos.state == PositionState::OpenProtected
-                                && self.has_exchange_protection(pos.venue, pos.id);
-                            pos.qty_open = ord.filled_qty;
-                            if let Some(avg) = ord.avg_fill_price {
-                                pos.entry_price = avg;
-                                pos.best_price = avg;
+                match outcome {
+                    FsmApplyOutcome::Updated {
+                        status,
+                        new_fill,
+                        fee_quote,
+                    } => {
+                        let fill_info = new_fill.as_ref().map(|f| (f.qty, f.price));
+                        if let Some(fill) = new_fill {
+                            let _ = self.store.upsert_fill(&fill);
+                            let env = JournalEnvelope::new(JournalEvent::FillRecorded { fill });
+                            if let Ok(seq) = self.store.append_event(exec.event_time_ms, &env) {
+                                self.state.apply_event(seq, &env);
                             }
-                            pos.fees_paid_quote = pos.fees_paid_quote.saturating_add(fee_quote);
+                        }
 
-                            let target_state = if already_protected {
-                                PositionState::OpenProtected
-                            } else if let Some(rules) = self
-                                .rules_by_venue_symbol
-                                .get(&(pos.venue, pos.symbol.clone()))
-                                .cloned()
+                        let tracked = self
+                            .fsm
+                            .get(exec.venue, &exec.client_order_id)
+                            .or_else(|| {
+                                exec.orig_client_order_id
+                                    .as_deref()
+                                    .and_then(|orig| self.fsm.get(exec.venue, orig))
+                            })
+                            .cloned();
+                        if let Some(ord) = tracked {
+                            if is_terminal(status) {
+                                self.pending_entry_deadlines
+                                    .remove(&(ord.venue, ord.client_id.clone()));
+                            }
+                            let upd_env = JournalEnvelope::new(JournalEvent::OrderStatusUpdated {
+                                venue: ord.venue,
+                                client_id: ord.client_id.clone(),
+                                exchange_id: ord.exchange_id,
+                                status,
+                                filled_qty: ord.filled_qty,
+                                avg_fill_price: ord.avg_fill_price,
+                                updated_at: ord.updated_at,
+                            });
+                            if let Ok(seq) = self.store.append_event(exec.event_time_ms, &upd_env) {
+                                self.state.apply_event(seq, &upd_env);
+                            }
+                            let _ = self.store.upsert_order(&ord);
+
+                            // Entry filled or partially filled -> install protection FIRST, then record OpenProtected/OpenUnprotected!
+                            let has_fill_qty = ord.filled_qty.as_decimal() > Decimal::ZERO;
+                            let entry_needs_protection = ord.purpose == OrderPurpose::Entry
+                                && has_fill_qty
+                                && matches!(
+                                    status,
+                                    OrderStatus::Filled | OrderStatus::PartiallyFilled
+                                );
+                            if entry_needs_protection
+                                && let Some(pos_id) = ord.position_id
+                                && let Some(mut pos) = self.state.positions.get(&pos_id).cloned()
                             {
-                                match self
-                                    .install_venue_protection(&pos, &rules, exec.event_time_ms)
-                                    .await
-                                {
-                                    Ok(()) => PositionState::OpenProtected,
-                                    Err(err) => {
-                                        warn!(
-                                            error = %err,
-                                            position_id = %pos.id,
-                                            venue = ?pos.venue,
-                                            "failed to install protection after entry fill; marking OpenUnprotected"
-                                        );
-                                        self.oco_mgr
-                                            .record_reinstall_failure(pos.id, pos.stop_price);
-                                        PositionState::OpenUnprotected
-                                    }
+                                let already_protected = pos.state == PositionState::OpenProtected
+                                    && self.has_exchange_protection(pos.venue, pos.id);
+                                pos.qty_open = ord.filled_qty;
+                                if let Some(avg) = ord.avg_fill_price {
+                                    pos.entry_price = avg;
+                                    pos.best_price = avg;
                                 }
-                            } else {
-                                self.oco_mgr
-                                    .record_reinstall_failure(pos.id, pos.stop_price);
-                                PositionState::OpenUnprotected
-                            };
+                                pos.fees_paid_quote = pos.fees_paid_quote.saturating_add(fee_quote);
 
-                            pos.state = target_state;
-                            let pos_env =
-                                JournalEnvelope::new(JournalEvent::PositionStateChanged {
-                                    venue: pos.venue,
-                                    position_id: pos.id,
-                                    state: target_state,
-                                    qty_open: pos.qty_open,
-                                    realized_pnl_quote: pos.realized_pnl_quote,
-                                    fees_paid_quote: pos.fees_paid_quote,
-                                    close_reason: None,
-                                });
-                            if let Ok(seq) = self.store.append_event(exec.event_time_ms, &pos_env) {
-                                self.state.apply_event(seq, &pos_env);
+                                let target_state = if already_protected {
+                                    PositionState::OpenProtected
+                                } else if let Some(rules) = self
+                                    .rules_by_venue_symbol
+                                    .get(&(pos.venue, pos.symbol.clone()))
+                                    .cloned()
+                                {
+                                    match self
+                                        .install_venue_protection(&pos, &rules, exec.event_time_ms)
+                                        .await
+                                    {
+                                        Ok(()) => PositionState::OpenProtected,
+                                        Err(err) => {
+                                            warn!(
+                                                error = %err,
+                                                position_id = %pos.id,
+                                                venue = ?pos.venue,
+                                                "failed to install protection after entry fill; marking OpenUnprotected"
+                                            );
+                                            self.oco_mgr
+                                                .record_reinstall_failure(pos.id, pos.stop_price);
+                                            PositionState::OpenUnprotected
+                                        }
+                                    }
+                                } else {
+                                    self.oco_mgr
+                                        .record_reinstall_failure(pos.id, pos.stop_price);
+                                    PositionState::OpenUnprotected
+                                };
+
+                                pos.state = target_state;
+                                let pos_env =
+                                    JournalEnvelope::new(JournalEvent::PositionStateChanged {
+                                        venue: pos.venue,
+                                        position_id: pos.id,
+                                        state: target_state,
+                                        qty_open: pos.qty_open,
+                                        realized_pnl_quote: pos.realized_pnl_quote,
+                                        fees_paid_quote: pos.fees_paid_quote,
+                                        close_reason: None,
+                                    });
+                                if let Ok(seq) =
+                                    self.store.append_event(exec.event_time_ms, &pos_env)
+                                {
+                                    self.state.apply_event(seq, &pos_env);
+                                }
+                                let _ = self.store.upsert_position(&pos, None, None);
+                            } else if ord.purpose != OrderPurpose::Entry
+                                && let Some((fill_qty, fill_px)) = fill_info
+                            {
+                                self.apply_exit_fill(
+                                    exec.venue,
+                                    &exec.symbol,
+                                    exec.side,
+                                    &exec.client_order_id,
+                                    ord.position_id,
+                                    Some(ord.purpose),
+                                    fill_qty,
+                                    fill_px,
+                                    fee_quote,
+                                    exec.event_time_ms,
+                                );
                             }
-                            let _ = self.store.upsert_position(&pos, None, None);
                         }
                     }
+                    FsmApplyOutcome::UnknownOrder => {
+                        // Futures Algo SL/TP fills and Spot OCO leg fills are not registered in OrderFsm.
+                        // Dedup by (venue, symbol, trade_id), journal FillRecorded, and apply position reduction.
+                        let is_trade =
+                            exec.trade_id >= 0 && exec.last_filled_qty.as_decimal() > Decimal::ZERO;
+                        if is_trade {
+                            let fill_key = (exec.venue, exec.symbol.clone(), exec.trade_id);
+                            if !self.state.fills.contains_key(&fill_key) {
+                                let matching_pos_id = self
+                                    .state
+                                    .positions
+                                    .values()
+                                    .find(|p| {
+                                        p.venue == exec.venue
+                                            && p.symbol == exec.symbol
+                                            && p.state != PositionState::Closed
+                                            && p.qty_open.as_decimal() > Decimal::ZERO
+                                            && exec.side == exit_side_for_direction(p.direction)
+                                    })
+                                    .map(|p| p.id);
+
+                                if let Some(pos_id) = matching_pos_id {
+                                    let fee_asset = exec
+                                        .commission_asset
+                                        .clone()
+                                        .unwrap_or_else(|| quote.clone());
+                                    let fee_quote = convert_fee_to_quote(
+                                        exec.commission,
+                                        &fee_asset,
+                                        &quote,
+                                        exec.symbol.as_str(),
+                                        exec.last_filled_price.as_decimal(),
+                                        None,
+                                    );
+                                    let fill = FillRecord {
+                                        venue: exec.venue,
+                                        trade_id: exec.trade_id,
+                                        symbol: exec.symbol.clone(),
+                                        client_id: exec.client_order_id.clone(),
+                                        price: exec.last_filled_price,
+                                        qty: exec.last_filled_qty,
+                                        fee: exec.commission,
+                                        fee_asset,
+                                        is_maker: exec.is_maker,
+                                        ts_ms: exec.transact_time_ms,
+                                    };
+                                    let _ = self.store.upsert_fill(&fill);
+                                    let env =
+                                        JournalEnvelope::new(JournalEvent::FillRecorded { fill });
+                                    if let Ok(seq) =
+                                        self.store.append_event(exec.event_time_ms, &env)
+                                    {
+                                        self.state.apply_event(seq, &env);
+                                    }
+
+                                    self.apply_exit_fill(
+                                        exec.venue,
+                                        &exec.symbol,
+                                        exec.side,
+                                        &exec.client_order_id,
+                                        Some(pos_id),
+                                        None,
+                                        exec.last_filled_qty,
+                                        exec.last_filled_price,
+                                        fee_quote,
+                                        exec.event_time_ms,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    FsmApplyOutcome::DuplicateFillIgnored | FsmApplyOutcome::StaleEventIgnored => {}
                 }
             }
             GatewayEvent::ListStatus(ls) => {
@@ -1947,11 +2148,17 @@ impl EngineActor {
                             .get(pos_id)
                             .is_some_and(|p| p.oco_b_list_id.is_some())
                     {
-                        let closed_part = pos
-                            .qty_open
-                            .as_decimal()
-                            .saturating_mul(self.config.strategy.trend_pullback.tp1_close_ratio);
-                        pos.qty_open = Qty(pos.qty_open.as_decimal().saturating_sub(closed_part));
+                        let already_reduced_by_exec = self
+                            .exit_fills
+                            .get(&pos_id)
+                            .is_some_and(|a| a.exit_qty > Decimal::ZERO);
+                        if !already_reduced_by_exec {
+                            let closed_part = pos.qty_open.as_decimal().saturating_mul(
+                                self.config.strategy.trend_pullback.tp1_close_ratio,
+                            );
+                            pos.qty_open =
+                                Qty(pos.qty_open.as_decimal().saturating_sub(closed_part));
+                        }
                         pos.tp1_done = true;
                         let env = JournalEnvelope::new(JournalEvent::PositionTp1Done {
                             venue: pos.venue,
@@ -1963,26 +2170,40 @@ impl EngineActor {
                         if let Ok(seq) = self.store.append_event(ls.event_time_ms, &env) {
                             self.state.apply_event(seq, &env);
                         }
+                        let _ = self.store.upsert_position(&pos, None, None);
                     } else if self
                         .oco_mgr
                         .get(pos_id)
                         .is_none_or(|p| !p.has_active_protection())
                     {
-                        let exit_px = self
-                            .ref_prices
-                            .get(&(pos.venue, pos.symbol.clone()))
-                            .copied()
-                            .unwrap_or(pos.entry_price);
+                        let accum = self.exit_fills.remove(&pos_id).unwrap_or_default();
+                        let exit_px = if accum.exit_qty > Decimal::ZERO {
+                            accum
+                                .exit_notional
+                                .checked_div(accum.exit_qty)
+                                .map_or(pos.entry_price, Price)
+                        } else {
+                            self.ref_prices
+                                .get(&(pos.venue, pos.symbol.clone()))
+                                .copied()
+                                .unwrap_or(pos.entry_price)
+                        };
                         let gross = compute_gross_realized_pnl(
                             pos.direction,
                             pos.entry_price,
                             exit_px,
                             pos.qty_open,
                         );
+                        let undeducted_fees = pos
+                            .fees_paid_quote
+                            .saturating_sub(accum.fees_deducted_from_pnl);
                         let net_pnl = pos
                             .realized_pnl_quote
                             .saturating_add(gross)
-                            .saturating_sub(pos.fees_paid_quote);
+                            .saturating_sub(undeducted_fees);
+                        pos.state = PositionState::Closed;
+                        pos.qty_open = Qty(Decimal::ZERO);
+                        pos.realized_pnl_quote = net_pnl;
                         let env = JournalEnvelope::new(JournalEvent::PositionStateChanged {
                             venue: pos.venue,
                             position_id: pos.id,
@@ -1995,6 +2216,11 @@ impl EngineActor {
                         if let Ok(seq) = self.store.append_event(ls.event_time_ms, &env) {
                             self.state.apply_event(seq, &env);
                         }
+                        let _ = self.store.upsert_position(
+                            &pos,
+                            Some(ls.event_time_ms),
+                            Some("OCO_ALL_DONE"),
+                        );
                         self.record_closed_position_pnl(pos.venue, net_pnl, ls.event_time_ms);
                         self.oco_mgr.remove(pos_id);
                         self.futures_protections.remove(&pos_id);
@@ -2003,6 +2229,153 @@ impl EngineActor {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Apply a position-reducing fill (Spot OCO/exit or Futures SL/TP/exit) to an open position,
+    /// accumulating fees & realized `PnL` from the actual fill price and closing the position once
+    /// `qty_open <= 0`.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_exit_fill(
+        &mut self,
+        venue: Venue,
+        symbol: &Symbol,
+        side: Side,
+        client_order_id: &str,
+        position_id: Option<Uuid>,
+        purpose: Option<OrderPurpose>,
+        fill_qty: Qty,
+        fill_price: Price,
+        fee_quote: Decimal,
+        ts_ms: i64,
+    ) {
+        let pos_id = position_id.or_else(|| {
+            self.state
+                .positions
+                .values()
+                .find(|p| {
+                    p.venue == venue
+                        && p.symbol == *symbol
+                        && p.state != PositionState::Closed
+                        && p.qty_open.as_decimal() > Decimal::ZERO
+                        && side == exit_side_for_direction(p.direction)
+                })
+                .map(|p| p.id)
+        });
+        let Some(pos_id) = pos_id else {
+            return;
+        };
+        let Some(mut pos) = self.state.positions.get(&pos_id).cloned() else {
+            return;
+        };
+        if pos.state == PositionState::Closed || pos.qty_open.as_decimal() <= Decimal::ZERO {
+            return;
+        }
+        if side != exit_side_for_direction(pos.direction) {
+            return;
+        }
+
+        let effective_qty = fill_qty.as_decimal().min(pos.qty_open.as_decimal());
+        if effective_qty <= Decimal::ZERO {
+            return;
+        }
+
+        pos.fees_paid_quote = pos.fees_paid_quote.saturating_add(fee_quote);
+        let accum = self.exit_fills.entry(pos_id).or_default();
+        let gross = compute_gross_realized_pnl(
+            pos.direction,
+            pos.entry_price,
+            fill_price,
+            Qty(effective_qty),
+        );
+        let undeducted_fees = pos
+            .fees_paid_quote
+            .saturating_sub(accum.fees_deducted_from_pnl);
+        pos.realized_pnl_quote = pos
+            .realized_pnl_quote
+            .saturating_add(gross)
+            .saturating_sub(undeducted_fees);
+        accum.fees_deducted_from_pnl = pos.fees_paid_quote;
+        accum.exit_qty = accum.exit_qty.saturating_add(effective_qty);
+        accum.exit_notional = accum
+            .exit_notional
+            .saturating_add(effective_qty.saturating_mul(fill_price.as_decimal()));
+
+        let remaining = pos.qty_open.as_decimal().saturating_sub(effective_qty);
+        if remaining <= Decimal::ZERO {
+            let close_reason = self.classify_exit_reason(pos_id, client_order_id, purpose);
+            pos.qty_open = Qty(Decimal::ZERO);
+            pos.state = PositionState::Closed;
+            let env = JournalEnvelope::new(JournalEvent::PositionStateChanged {
+                venue: pos.venue,
+                position_id: pos.id,
+                state: PositionState::Closed,
+                qty_open: Qty(Decimal::ZERO),
+                realized_pnl_quote: pos.realized_pnl_quote,
+                fees_paid_quote: pos.fees_paid_quote,
+                close_reason: Some(close_reason.clone()),
+            });
+            if let Ok(seq) = self.store.append_event(ts_ms, &env) {
+                self.state.apply_event(seq, &env);
+            }
+            let _ = self
+                .store
+                .upsert_position(&pos, Some(ts_ms), Some(&close_reason));
+            self.record_closed_position_pnl(pos.venue, pos.realized_pnl_quote, ts_ms);
+            self.oco_mgr.remove(pos_id);
+            self.futures_protections.remove(&pos_id);
+            self.watcher.clear(pos_id);
+            self.exit_fills.remove(&pos_id);
+        } else {
+            pos.qty_open = Qty(remaining);
+            let env = JournalEnvelope::new(JournalEvent::PositionStateChanged {
+                venue: pos.venue,
+                position_id: pos.id,
+                state: pos.state,
+                qty_open: pos.qty_open,
+                realized_pnl_quote: pos.realized_pnl_quote,
+                fees_paid_quote: pos.fees_paid_quote,
+                close_reason: None,
+            });
+            if let Ok(seq) = self.store.append_event(ts_ms, &env) {
+                self.state.apply_event(seq, &env);
+            }
+            let _ = self.store.upsert_position(&pos, None, None);
+        }
+    }
+
+    fn classify_exit_reason(
+        &self,
+        pos_id: Uuid,
+        client_order_id: &str,
+        purpose: Option<OrderPurpose>,
+    ) -> String {
+        if let Some(p) = purpose {
+            return match p {
+                OrderPurpose::ProtectStop => "SL_FILLED".to_owned(),
+                OrderPurpose::TakeProfit1 => "TP1_FILLED".to_owned(),
+                OrderPurpose::TakeProfit2 => "TP2_FILLED".to_owned(),
+                OrderPurpose::EmergencyExit => "EMERGENCY_EXIT_FILLED".to_owned(),
+                OrderPurpose::ManualFlatten => "MANUAL_FLATTEN_FILLED".to_owned(),
+                OrderPurpose::Entry => "EXIT_FILLED".to_owned(),
+            };
+        }
+        if let Some(algo) = self.futures_protections.get(&pos_id) {
+            if algo.active_sl_client_id == client_order_id {
+                return "FUTURES_SL_FILLED".to_owned();
+            }
+            if algo.active_tp_client_id.as_deref() == Some(client_order_id) {
+                return "FUTURES_TP_FILLED".to_owned();
+            }
+        }
+        if client_order_id.ends_with("-SL") {
+            "SL_FILLED".to_owned()
+        } else if client_order_id.ends_with("-TP1") {
+            "TP1_FILLED".to_owned()
+        } else if client_order_id.ends_with("-TP2") {
+            "TP2_FILLED".to_owned()
+        } else {
+            "EXIT_FILLED".to_owned()
         }
     }
 
@@ -2021,6 +2394,7 @@ impl EngineActor {
         self.last_market_tick_ms = Some(tick.now_ms);
         self.ref_prices
             .insert((tick.venue, tick.symbol.clone()), tick.price);
+        self.expire_stale_entries(tick.now_ms).await;
         let matching_ids: Vec<Uuid> = self
             .state
             .positions
@@ -2151,15 +2525,19 @@ impl EngineActor {
                     )
                     .await
                 {
-                    Ok(_) => {
+                    Ok(prot) => {
                         let stop_env = JournalEnvelope::new(JournalEvent::PositionStopMoved {
                             venue: pos.venue,
                             position_id: pos.id,
-                            new_stop_price: new_stop,
+                            new_stop_price: prot.installed_stop,
                             breakeven_done: is_breakeven,
                         });
-                        let next_seq = self.state.last_seq.saturating_add(1);
-                        self.state.apply_event(next_seq, &stop_env);
+                        if let Some(seq) = prot.last_journal_seq {
+                            self.state.apply_event(seq, &stop_env);
+                        }
+                        if let Some(updated) = self.state.positions.get(&pos.id) {
+                            let _ = self.store.upsert_position(updated, None, None);
+                        }
                     }
                     Err(err) => {
                         warn!(
@@ -2197,6 +2575,9 @@ impl EngineActor {
                             });
                             if let Ok(jseq) = self.store.append_event(now_ms, &stop_env) {
                                 self.state.apply_event(jseq, &stop_env);
+                            }
+                            if let Some(updated) = self.state.positions.get(&pos.id) {
+                                let _ = self.store.upsert_position(updated, None, None);
                             }
                         }
                         Err(err) => {
@@ -2263,7 +2644,7 @@ impl EngineActor {
         }
 
         let exit_side = exit_side_for_direction(pos.direction);
-        let placed = if let Ok(seq) = self.store.next_order_seq()
+        let placed_ack = if let Ok(seq) = self.store.next_order_seq()
             && let Ok(cid) = format_client_order_id(
                 &self.bot_id,
                 self.run_id,
@@ -2285,7 +2666,7 @@ impl EngineActor {
                 })
                 .await
             {
-                Ok(_) => true,
+                Ok(ack) => Some(ack),
                 Err(err) => {
                     warn!(
                         position_id = %pos.id,
@@ -2293,14 +2674,14 @@ impl EngineActor {
                         error = %err,
                         "emergency market exit order failed; keeping position open for retry"
                     );
-                    false
+                    None
                 }
             }
         } else {
-            false
+            None
         };
 
-        if !placed {
+        let Some(ack) = placed_ack else {
             if pos.state != PositionState::OpenUnprotected {
                 let unprot_env = JournalEnvelope::new(JournalEvent::PositionStateChanged {
                     venue: pos.venue,
@@ -2314,21 +2695,39 @@ impl EngineActor {
                 if let Ok(seq) = self.store.append_event(now_ms, &unprot_env) {
                     self.state.apply_event(seq, &unprot_env);
                 }
+                let mut unprot_pos = pos.clone();
+                unprot_pos.state = PositionState::OpenUnprotected;
+                let _ = self.store.upsert_position(&unprot_pos, None, None);
             }
             return false;
-        }
+        };
 
-        let exit_px = self
-            .ref_prices
-            .get(&(pos.venue, pos.symbol.clone()))
-            .copied()
+        let accum = self.exit_fills.remove(&pos.id).unwrap_or_default();
+        let ack_fill_px = if ack.executed_qty.as_decimal() > Decimal::ZERO
+            && ack.cumulative_quote_qty > Decimal::ZERO
+        {
+            ack.cumulative_quote_qty
+                .checked_div(ack.executed_qty.as_decimal())
+                .map(Price)
+        } else {
+            None
+        };
+        let exit_px = ack_fill_px
+            .or_else(|| {
+                self.ref_prices
+                    .get(&(pos.venue, pos.symbol.clone()))
+                    .copied()
+            })
             .unwrap_or(pos.entry_price);
         let gross =
             compute_gross_realized_pnl(pos.direction, pos.entry_price, exit_px, pos.qty_open);
+        let undeducted_fees = pos
+            .fees_paid_quote
+            .saturating_sub(accum.fees_deducted_from_pnl);
         let net_pnl = pos
             .realized_pnl_quote
             .saturating_add(gross)
-            .saturating_sub(pos.fees_paid_quote);
+            .saturating_sub(undeducted_fees);
 
         let close_env = JournalEnvelope::new(JournalEvent::PositionStateChanged {
             venue: pos.venue,
@@ -2342,21 +2741,185 @@ impl EngineActor {
         if let Ok(seq) = self.store.append_event(now_ms, &close_env) {
             self.state.apply_event(seq, &close_env);
         }
+        let mut closed_pos = pos.clone();
+        closed_pos.state = PositionState::Closed;
+        closed_pos.qty_open = Qty(Decimal::ZERO);
+        closed_pos.realized_pnl_quote = net_pnl;
+        let _ = self
+            .store
+            .upsert_position(&closed_pos, Some(now_ms), Some(reason));
         self.record_closed_position_pnl(pos.venue, net_pnl, now_ms);
         self.watcher.clear(pos.id);
         true
+    }
+
+    /// Cancel stale unfilled `OrderPurpose::Entry` orders whose TTL has elapsed (Audit #10).
+    /// Never touches protective orders (Hard Rule #7) and never sleeps in a loop.
+    #[allow(clippy::too_many_lines)]
+    async fn expire_stale_entries(&mut self, now_ms: i64) {
+        let expired_keys: Vec<(Venue, String)> = self
+            .pending_entry_deadlines
+            .iter()
+            .filter_map(|(k, &deadline)| (now_ms >= deadline).then_some(k.clone()))
+            .collect();
+
+        for (venue, cid) in expired_keys {
+            let Some(ord) = self
+                .fsm
+                .get(venue, &cid)
+                .or_else(|| self.state.orders.get(&(venue, cid.clone())))
+                .cloned()
+            else {
+                self.pending_entry_deadlines.remove(&(venue, cid));
+                continue;
+            };
+            if ord.purpose != OrderPurpose::Entry || is_terminal(ord.status) {
+                self.pending_entry_deadlines.remove(&(venue, cid));
+                continue;
+            }
+            let Some(adp) = self.adapter_for_venue(venue) else {
+                continue;
+            };
+
+            match adp
+                .cancel_order(CancelOrderRequest {
+                    symbol: ord.symbol.clone(),
+                    orig_client_order_id: Some(cid.clone()),
+                    order_id: ord.exchange_id,
+                    new_client_order_id: None,
+                })
+                .await
+            {
+                Ok(cancel_ack) => {
+                    self.pending_entry_deadlines.remove(&(venue, cid.clone()));
+                    let dt = ms_to_dt(now_ms);
+                    let effective_filled = Qty(ord
+                        .filled_qty
+                        .as_decimal()
+                        .max(cancel_ack.executed_qty.as_decimal()));
+                    self.fsm.mark_canceled(venue, &cid, effective_filled, dt);
+                    let mut updated_ord = ord.clone();
+                    updated_ord.status = OrderStatus::Canceled;
+                    updated_ord.filled_qty = effective_filled;
+                    updated_ord.updated_at = dt;
+
+                    let upd_env = JournalEnvelope::new(JournalEvent::OrderStatusUpdated {
+                        venue,
+                        client_id: cid.clone(),
+                        exchange_id: updated_ord.exchange_id,
+                        status: OrderStatus::Canceled,
+                        filled_qty: effective_filled,
+                        avg_fill_price: updated_ord.avg_fill_price,
+                        updated_at: dt,
+                    });
+                    if let Ok(seq) = self.store.append_event(now_ms, &upd_env) {
+                        self.state.apply_event(seq, &upd_env);
+                    }
+                    let _ = self.store.upsert_order(&updated_ord);
+
+                    if let Some(pos_id) = ord.position_id
+                        && let Some(mut pos) = self.state.positions.get(&pos_id).cloned()
+                    {
+                        if effective_filled.as_decimal() > Decimal::ZERO {
+                            // Partial fill occurred before cancel: preserve & protect filled qty.
+                            let already_protected = pos.state == PositionState::OpenProtected
+                                && self.has_exchange_protection(pos.venue, pos.id);
+                            pos.qty_open = effective_filled;
+                            let target_state = if already_protected {
+                                PositionState::OpenProtected
+                            } else if let Some(rules) = self
+                                .rules_by_venue_symbol
+                                .get(&(pos.venue, pos.symbol.clone()))
+                                .cloned()
+                            {
+                                match self.install_venue_protection(&pos, &rules, now_ms).await {
+                                    Ok(()) => PositionState::OpenProtected,
+                                    Err(err) => {
+                                        warn!(
+                                            error = %err,
+                                            position_id = %pos.id,
+                                            "failed to protect partial fill on entry TTL cancel"
+                                        );
+                                        self.oco_mgr
+                                            .record_reinstall_failure(pos.id, pos.stop_price);
+                                        PositionState::OpenUnprotected
+                                    }
+                                }
+                            } else {
+                                self.oco_mgr
+                                    .record_reinstall_failure(pos.id, pos.stop_price);
+                                PositionState::OpenUnprotected
+                            };
+                            pos.state = target_state;
+                            let pos_env =
+                                JournalEnvelope::new(JournalEvent::PositionStateChanged {
+                                    venue: pos.venue,
+                                    position_id: pos.id,
+                                    state: target_state,
+                                    qty_open: pos.qty_open,
+                                    realized_pnl_quote: pos.realized_pnl_quote,
+                                    fees_paid_quote: pos.fees_paid_quote,
+                                    close_reason: None,
+                                });
+                            if let Ok(seq) = self.store.append_event(now_ms, &pos_env) {
+                                self.state.apply_event(seq, &pos_env);
+                            }
+                            let _ = self.store.upsert_position(&pos, None, None);
+                        } else if pos.state == PositionState::EntryPending {
+                            // Unfilled entry expired: close the pending position cleanly.
+                            pos.state = PositionState::Closed;
+                            pos.qty_open = Qty(Decimal::ZERO);
+                            let close_env =
+                                JournalEnvelope::new(JournalEvent::PositionStateChanged {
+                                    venue: pos.venue,
+                                    position_id: pos.id,
+                                    state: PositionState::Closed,
+                                    qty_open: Qty(Decimal::ZERO),
+                                    realized_pnl_quote: Decimal::ZERO,
+                                    fees_paid_quote: pos.fees_paid_quote,
+                                    close_reason: Some("ENTRY_TTL_EXPIRED".into()),
+                                });
+                            if let Ok(seq) = self.store.append_event(now_ms, &close_env) {
+                                self.state.apply_event(seq, &close_env);
+                            }
+                            let _ = self.store.upsert_position(
+                                &pos,
+                                Some(now_ms),
+                                Some("ENTRY_TTL_EXPIRED"),
+                            );
+                        }
+                    }
+                }
+                Err(GatewayError::ExchangeRejected {
+                    kind: ExchangeErrorKind::CancelRejected | ExchangeErrorKind::OrderNotFound,
+                    ..
+                }) => {
+                    // Already terminal on exchange (e.g. filled in-flight); stop retrying cancel.
+                    self.pending_entry_deadlines.remove(&(venue, cid));
+                }
+                Err(err) => {
+                    warn!(
+                        ?venue,
+                        client_id = %cid,
+                        error = %err,
+                        "entry TTL cancel failed; will retry on next tick"
+                    );
+                }
+            }
+        }
     }
 
     async fn handle_reconcile(&mut self, now_ms: i64) -> Result<ReconcileReport, EngineError> {
         let quote_asset = self.quote_asset().to_owned();
         let rules_map = self.rules_map_for_venue(self.venue);
         let refs_map = self.ref_prices_for_venue(self.venue);
-        let rep = reconcile_venue(
+        let rep = reconcile_venue_with_futures(
             self.adapter.as_ref(),
             &mut self.store,
             &mut self.state,
             &mut self.fsm,
             &mut self.oco_mgr,
+            Some(&mut self.futures_protections),
             &rules_map,
             &refs_map,
             &ReconcileConfig {
@@ -2403,6 +2966,7 @@ impl EngineActor {
                     .is_ok()
             {
                 canceled_count += 1;
+                self.pending_entry_deadlines.remove(&(v, cid.clone()));
                 let env = JournalEnvelope::new(JournalEvent::OrderStatusUpdated {
                     venue: v,
                     client_id: cid,

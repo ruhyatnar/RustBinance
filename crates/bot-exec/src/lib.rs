@@ -32,4 +32,6 @@ pub use protection::{
     DEFAULT_STOP_LIMIT_OFFSET_BPS, DualOcoManager, HardStopWatcher, PositionProtection,
     ProtectionError,
 };
-pub use reconcile::{ReconcileConfig, ReconcileError, ReconcileReport, reconcile_venue};
+pub use reconcile::{
+    ReconcileConfig, ReconcileError, ReconcileReport, reconcile_venue, reconcile_venue_with_futures,
+};

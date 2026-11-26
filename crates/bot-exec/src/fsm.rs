@@ -145,6 +145,28 @@ impl OrderFsm {
         Some(order.status)
     }
 
+    /// Mark a non-terminal order canceled (e.g. entry TTL expiry or graceful shutdown),
+    /// preserving monotonic `filled_qty`.
+    pub fn mark_canceled(
+        &mut self,
+        venue: Venue,
+        client_id: &str,
+        filled_qty: Qty,
+        now: OffsetDateTime,
+    ) -> Option<OrderStatus> {
+        let key = (venue, client_id.to_owned());
+        let order = self.orders.get_mut(&key)?;
+        if is_terminal(order.status) {
+            return Some(order.status);
+        }
+        if filled_qty.as_decimal() > order.filled_qty.as_decimal() {
+            order.filled_qty = filled_qty;
+        }
+        order.status = OrderStatus::Canceled;
+        order.updated_at = now;
+        Some(order.status)
+    }
+
     /// Apply an [`ExecEvent`] idempotently, enforcing monotonic `filled_qty` and converting fees.
     ///
     /// `fee_asset_to_quote_rate` converts non-quote commission assets (e.g. BNB → USDT).

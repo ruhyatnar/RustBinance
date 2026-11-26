@@ -6,7 +6,7 @@ pub mod actor;
 mod helpers;
 
 pub use actor::{
-    COMMAND_CHANNEL_CAPACITY, EngineActor, EngineCommand, EngineError, EngineFullSnapshot,
-    EngineHandle, EngineHandleError, EntrySubmissionResult, MarketTick, RuntimeHealth,
-    TelemetrySnapshot, USER_EVENT_CHANNEL_CAPACITY, VenueSwitchReport,
+    COMMAND_CHANNEL_CAPACITY, DEFAULT_ENTRY_TTL_MS, EngineActor, EngineCommand, EngineError,
+    EngineFullSnapshot, EngineHandle, EngineHandleError, EntrySubmissionResult, MarketTick,
+    RuntimeHealth, TelemetrySnapshot, USER_EVENT_CHANNEL_CAPACITY, VenueSwitchReport,
 };
