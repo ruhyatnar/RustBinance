@@ -1,17 +1,19 @@
 //! Spot REST client for clock synchronization (`GET /api/v3/time`) and `exchangeInfo` (§4.1).
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bot_types::{InstrumentRules, Symbol, Venue};
+use bot_types::{InstrumentRules, Kline, Symbol, Venue};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+use crate::auth::{Ed25519Credentials, signed_query};
 use crate::clock::ClockSyncState;
 use crate::error::GatewayError;
-use crate::gateway::ExchangeInfoSnapshot;
+use crate::gateway::{AccountBalance, AccountSnapshot, ExchangeInfoSnapshot};
 use crate::rate_limit::{RateLimitRule, RateLimitTracker};
 
 /// Result of calling `GET /api/v3/time`.
@@ -141,6 +143,135 @@ impl SpotRestClient {
         let body = check_rest_response(resp, now_unix_ms(), &self.rate_limits).await?;
         parse_spot_exchange_info(&body)
     }
+
+    /// Signed read-only `GET /api/v3/account` (weight 20). Never places orders.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure, Binance API error (e.g. `-2015`, `-1022`),
+    /// or malformed payload.
+    pub async fn account_snapshot(
+        &self,
+        creds: &Ed25519Credentials,
+        recv_window_ms: u64,
+    ) -> Result<AccountSnapshot, GatewayError> {
+        let mut params = BTreeMap::new();
+        params.insert("recvWindow".to_owned(), recv_window_ms.to_string());
+        params.insert(
+            "timestamp".to_owned(),
+            self.clock.adjusted_now_ms(now_unix_ms()).to_string(),
+        );
+        let sig = creds.sign_params(&params);
+        let url = format!(
+            "{}/api/v3/account?{}",
+            self.base_url,
+            signed_query(&params, &sig)
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .header("X-MBX-APIKEY", creds.api_key())
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let body = check_rest_response(resp, now_unix_ms(), &self.rate_limits).await?;
+        parse_spot_account(&body)
+    }
+
+    /// Public `GET /api/v3/klines` (no auth). Last bar may still be forming.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure or malformed payload.
+    pub async fn klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        limit: u16,
+    ) -> Result<Vec<Kline>, GatewayError> {
+        let url = format!(
+            "{}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+            self.base_url
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let body = check_rest_response(resp, now_unix_ms(), &self.rate_limits).await?;
+        parse_rest_klines(&body, now_unix_ms())
+    }
+}
+
+/// Parse a Spot `GET /api/v3/account` payload, keeping only non-zero balances.
+///
+/// # Errors
+/// Returns [`GatewayError::WireFormat`] if the JSON structure is invalid.
+pub fn parse_spot_account(raw: &str) -> Result<AccountSnapshot, GatewayError> {
+    let v: RawSpotAccount =
+        serde_json::from_str(raw).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+    let balances = v
+        .balances
+        .into_iter()
+        .filter_map(|b| {
+            let free = Decimal::from_str(&b.free).ok()?;
+            let locked = Decimal::from_str(&b.locked).ok()?;
+            (!free.is_zero() || !locked.is_zero()).then_some(AccountBalance {
+                asset: b.asset,
+                free,
+                locked,
+            })
+        })
+        .collect();
+    Ok(AccountSnapshot {
+        venue: Venue::Spot,
+        can_trade: v.can_trade,
+        update_time_ms: v.update_time.unwrap_or_else(now_unix_ms),
+        balances,
+    })
+}
+
+/// Parse a Binance REST klines array (12-column rows, Spot and Futures share the format).
+///
+/// A bar is marked closed when its `close_time_ms < now_ms`.
+///
+/// # Errors
+/// Returns [`GatewayError::WireFormat`] on malformed rows.
+pub fn parse_rest_klines(raw: &str, now_ms: i64) -> Result<Vec<Kline>, GatewayError> {
+    let rows: Vec<Vec<serde_json::Value>> =
+        serde_json::from_str(raw).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+    rows.iter()
+        .map(|row| {
+            let bad = || GatewayError::WireFormat("malformed kline row".into());
+            let int = |i: usize| {
+                row.get(i)
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(bad)
+            };
+            let num = |i: usize| {
+                row.get(i)
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .ok_or_else(bad)
+            };
+            let close_time_ms = int(6)?;
+            Ok(Kline {
+                open_time_ms: int(0)?,
+                close_time_ms,
+                open: num(1)?,
+                high: num(2)?,
+                low: num(3)?,
+                close: num(4)?,
+                volume: num(5)?,
+                quote_volume: num(7)?,
+                trades: row
+                    .get(8)
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(bad)?,
+                taker_buy_base: num(9)?,
+                is_closed: close_time_ms < now_ms,
+            })
+        })
+        .collect()
 }
 
 /// Parse a Binance Spot `exchangeInfo` JSON payload into [`ExchangeInfoSnapshot`].
@@ -281,6 +412,22 @@ pub fn now_unix_ms() -> i64 {
 #[serde(rename_all = "camelCase")]
 struct RawServerTime {
     server_time: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSpotAccount {
+    can_trade: bool,
+    update_time: Option<i64>,
+    #[serde(default)]
+    balances: Vec<RawSpotBalance>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSpotBalance {
+    asset: String,
+    free: String,
+    locked: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -501,5 +648,111 @@ mod tests {
         assert!(tracker.can_place_order(1_000, 90).is_err());
 
         server.await.expect("server join");
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use ed25519_dalek::{Signature, SigningKey, Verifier};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::{SpotRestClient, parse_rest_klines, parse_spot_account};
+    use crate::auth::{Ed25519Credentials, canonical_payload};
+
+    #[test]
+    fn parse_spot_account_extracts_can_trade_and_non_zero_balances() {
+        let raw = r#"{"canTrade":false,"canWithdraw":false,"canDeposit":true,"updateTime":123,
+            "accountType":"SPOT","permissions":["SPOT"],
+            "balances":[{"asset":"BTC","free":"0.5","locked":"0"},
+                        {"asset":"ETH","free":"0","locked":"0.00000000"},
+                        {"asset":"USDT","free":"0","locked":"12.5"}]}"#;
+        let snap = parse_spot_account(raw).unwrap();
+        assert!(!snap.can_trade);
+        assert_eq!(snap.update_time_ms, 123);
+        let assets: Vec<_> = snap.balances.iter().map(|b| b.asset.as_str()).collect();
+        assert_eq!(assets, vec!["BTC", "USDT"]);
+    }
+
+    #[test]
+    fn parse_rest_klines_parses_12_column_array() {
+        let raw = r#"[[1000,"1.0","2.0","0.5","1.5","10",1999,"15",7,"4","6","0"],
+                      [2000,"1.5","2.5","1.0","2.0","11",2999,"16",8,"5","7","0"]]"#;
+        let bars = parse_rest_klines(raw, 2500).unwrap();
+        assert_eq!(bars.len(), 2);
+        let b0 = bars.first().unwrap();
+        assert_eq!(b0.open_time_ms, 1000);
+        assert_eq!(b0.close_time_ms, 1999);
+        assert!((b0.high - 2.0).abs() < f64::EPSILON);
+        assert!((b0.close - 1.5).abs() < f64::EPSILON);
+        assert_eq!(b0.trades, 7);
+        assert!(b0.is_closed);
+        // Last bar still forming at now=2500 (close_time 2999).
+        assert!(!bars.get(1).unwrap().is_closed);
+        assert!(parse_rest_klines(r#"[[1000,"x"]]"#, 0).is_err());
+    }
+
+    #[tokio::test]
+    async fn spot_account_snapshot_sends_signed_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(buf.get(..n).unwrap()).to_string();
+            let body = r#"{"canTrade":true,"updateTime":5,"balances":[]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            req
+        });
+
+        let seed = [7u8; 32];
+        let creds = Ed25519Credentials::from_seed("test-api-key".into(), seed).unwrap();
+        let client = SpotRestClient::new(format!("http://{addr}"), Duration::from_secs(5)).unwrap();
+        let snap = client.account_snapshot(&creds, 5000).await.unwrap();
+        assert!(snap.can_trade);
+
+        let req = server.await.unwrap();
+        let first = req.lines().next().unwrap();
+        assert!(first.starts_with("GET /api/v3/account?"), "{first}");
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("x-mbx-apikey: test-api-key")
+        );
+        let query = first
+            .trim_start_matches("GET /api/v3/account?")
+            .split(' ')
+            .next()
+            .unwrap();
+        let mut params = BTreeMap::new();
+        let mut sig = String::new();
+        for kv in query.split('&') {
+            let (k, v) = kv.split_once('=').unwrap();
+            if k == "signature" {
+                sig = v
+                    .replace("%2B", "+")
+                    .replace("%2F", "/")
+                    .replace("%3D", "=");
+            } else {
+                params.insert(k.to_owned(), v.to_owned());
+            }
+        }
+        assert_eq!(params.get("recvWindow").map(String::as_str), Some("5000"));
+        assert!(params.contains_key("timestamp"));
+        let sig_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, sig.as_bytes())
+                .unwrap();
+        let sig = Signature::from_slice(&sig_bytes).unwrap();
+        SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .verify(canonical_payload(&params).as_bytes(), &sig)
+            .unwrap();
     }
 }

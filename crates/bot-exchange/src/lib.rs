@@ -16,6 +16,7 @@ pub use balance_cache::{BalanceCache, BalanceProvenance, BalanceSource, CachedAc
 pub use clock::ClockSyncState;
 pub use dedup::EventDeduplicator;
 pub use error::{ExchangeErrorKind, GatewayError, SessionState};
+pub use futures::{FuturesAdapter, FuturesAdapterConfig, FuturesRestClient, FuturesWsSession};
 pub use gateway::{
     AccountBalance, AccountEvent, AccountSnapshot, ActivationReport, AlgoOrderAck, AlgoOrderType,
     CancelAlgoOrderAck, CancelAlgoOrderRequest, CancelOrderAck, CancelOrderListAck,

@@ -146,6 +146,14 @@ pub fn canonical_payload(params: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// Build a signed REST query string: canonical params followed by the URL-encoded
+/// Base64 `signature` (Base64 `+`, `/`, `=` must be percent-encoded in URLs).
+#[must_use]
+pub fn signed_query(params: &BTreeMap<String, String>, signature: &str) -> String {
+    let encoded: String = url::form_urlencoded::byte_serialize(signature.as_bytes()).collect();
+    format!("{}&signature={encoded}", canonical_payload(params))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -156,7 +164,18 @@ mod tests {
     use ed25519_dalek::pkcs8::spki::der::pem::LineEnding;
     use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 
-    use super::{Ed25519Credentials, canonical_payload};
+    use super::{Ed25519Credentials, canonical_payload, signed_query};
+
+    #[test]
+    fn signed_query_url_encodes_base64_signature() {
+        let mut map = BTreeMap::new();
+        map.insert("timestamp".into(), "1".into());
+        map.insert("recvWindow".into(), "5000".into());
+        assert_eq!(
+            signed_query(&map, "ab+c/d=="),
+            "recvWindow=5000&timestamp=1&signature=ab%2Bc%2Fd%3D%3D"
+        );
+    }
 
     #[test]
     fn canonical_payload_sorts_alphabetically() {

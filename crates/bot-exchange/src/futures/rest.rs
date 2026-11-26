@@ -11,7 +11,7 @@ use reqwest::{Client, Method, Response};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::auth::{Ed25519Credentials, canonical_payload};
+use crate::auth::{Ed25519Credentials, signed_query};
 use crate::clock::ClockSyncState;
 use crate::error::GatewayError;
 use crate::futures::adapter::{FuturesAccountSetup, FuturesMarginType};
@@ -287,6 +287,30 @@ impl FuturesRestClient {
         parse_account_snapshot(&body)
     }
 
+    /// Public `GET /fapi/v1/klines` (no auth). Last bar may still be forming.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] on HTTP failure or malformed payload.
+    pub async fn klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        limit: u16,
+    ) -> Result<Vec<bot_types::Kline>, GatewayError> {
+        let url = format!(
+            "{}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
+            self.base_url
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let body = self.check_response(resp).await?;
+        crate::spot::rest::parse_rest_klines(&body, now_unix_ms())
+    }
+
     /// Fallback `POST /fapi/v1/algoOrder`.
     ///
     /// # Errors
@@ -331,7 +355,7 @@ impl FuturesRestClient {
         let ts_ms = self.clock.adjusted_now_ms(now_unix_ms());
         params.insert("timestamp".to_owned(), ts_ms.to_string());
         let sig = creds.sign_params(&params);
-        let query = format!("{}&signature={sig}", canonical_payload(&params));
+        let query = signed_query(&params, &sig);
         let url = format!("{}{path}?{query}", self.base_url);
 
         let resp = self
@@ -879,6 +903,60 @@ mod tests {
         assert!(
             ts <= after_ms.saturating_add(offset_ms).saturating_add(1_000),
             "signed timestamp {ts} exceeded expected upper bound (after={after_ms})"
+        );
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::{FuturesRestClient, parse_account_snapshot};
+    use crate::rate_limit::RateLimitTracker;
+
+    #[test]
+    fn parse_futures_account_detects_can_trade_false() {
+        let raw = r#"{"canTrade":false,"updateTime":9,"assets":[
+            {"asset":"USDT","availableBalance":"100.5","initialMargin":"1"}]}"#;
+        let snap = parse_account_snapshot(raw).unwrap();
+        assert!(!snap.can_trade);
+        assert_eq!(snap.balances.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn futures_klines_fetches_public_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = sock.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(buf.get(..n).unwrap()).to_string();
+            let body = r#"[[1000,"1","2","0.5","1.5","10",1999,"15",7,"4","6","0"]]"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            req
+        });
+        let client = FuturesRestClient::new(
+            format!("http://{addr}"),
+            Duration::from_secs(5),
+            None,
+            Arc::new(RateLimitTracker::new()),
+        )
+        .unwrap();
+        let bars = client.klines("BTCUSDT", "5m", 10).await.unwrap();
+        assert_eq!(bars.len(), 1);
+        let req = server.await.unwrap();
+        assert!(
+            req.starts_with("GET /fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=10 "),
+            "{req}"
         );
     }
 }
