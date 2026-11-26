@@ -17,9 +17,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
 use crate::auth::Ed25519Credentials;
+use crate::balance_cache::BalanceCache;
 use crate::dedup::EventDeduplicator;
 use crate::error::{GatewayError, SessionState};
-use crate::gateway::GatewayEvent;
+use crate::gateway::{AccountEvent, GatewayEvent};
 use crate::rate_limit::{RateLimitTracker, ReconnectBackoff};
 use crate::spot::rest::now_unix_ms;
 use crate::spot::wire::{
@@ -205,6 +206,22 @@ impl SpotWsSession {
         rate_limits: Arc<RateLimitTracker>,
         clock_offset_ms: Arc<AtomicI64>,
     ) -> Result<(Self, mpsc::Receiver<GatewayEvent>, Option<i64>), GatewayError> {
+        Self::connect_with_balance_cache(config, credentials, rate_limits, clock_offset_ms, None)
+            .await
+    }
+
+    /// Connect, authenticate via Ed25519 `session.logon`, subscribe to `userDataStream.subscribe`,
+    /// and wire an optional [`BalanceCache`] updated by inbound WS account events and disconnects.
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] if the initial connection, logon, or subscription fails.
+    pub async fn connect_with_balance_cache(
+        config: SpotSessionConfig,
+        credentials: Arc<Ed25519Credentials>,
+        rate_limits: Arc<RateLimitTracker>,
+        clock_offset_ms: Arc<AtomicI64>,
+        balance_cache: Option<Arc<BalanceCache>>,
+    ) -> Result<(Self, mpsc::Receiver<GatewayEvent>, Option<i64>), GatewayError> {
         let (state_tx, state_rx) = watch::channel(SessionState::Disconnected);
         let (event_tx, event_rx) = mpsc::channel(config.event_channel_capacity.max(16));
         let (sig_tx, sig_rx) = mpsc::channel::<ConnSignal>(64);
@@ -217,6 +234,7 @@ impl SpotWsSession {
             &rate_limits,
             &clock_offset_ms,
             &dedup,
+            balance_cache.as_ref(),
             &event_tx,
             &sig_tx,
             Some(&state_tx),
@@ -238,6 +256,7 @@ impl SpotWsSession {
             mgr_rate_limits,
             mgr_clock_offset,
             dedup,
+            balance_cache,
             event_tx,
             state_tx,
             cmd_rx,
@@ -389,6 +408,7 @@ async fn establish_connection(
     rate_limits: &Arc<RateLimitTracker>,
     clock_offset_ms: &Arc<AtomicI64>,
     dedup: &Arc<Mutex<EventDeduplicator>>,
+    balance_cache: Option<&Arc<BalanceCache>>,
     event_tx: &mpsc::Sender<GatewayEvent>,
     sig_tx: &mpsc::Sender<ConnSignal>,
     state_tx: Option<&watch::Sender<SessionState>>,
@@ -420,6 +440,7 @@ async fn establish_connection(
     let r_notify = Arc::clone(&pending_notify);
     let r_rate_limits = Arc::clone(rate_limits);
     let r_dedup = Arc::clone(dedup);
+    let r_balance_cache = balance_cache.cloned();
     let r_event_tx = event_tx.clone();
     let r_sig_tx = sig_tx.clone();
     let r_pong_tx = tx.clone();
@@ -464,6 +485,25 @@ async fn establish_connection(
                                 }),
                                 _ => true,
                             };
+
+                            if let Some(ref cache) = r_balance_cache {
+                                match &event {
+                                    GatewayEvent::Account(AccountEvent::PositionUpdate {
+                                        balances,
+                                        event_time_ms,
+                                        ..
+                                    }) => {
+                                        cache.apply_ws_delta(balances, *event_time_ms);
+                                    }
+                                    GatewayEvent::Account(AccountEvent::BalanceDelta {
+                                        ..
+                                    })
+                                    | GatewayEvent::StreamTerminated { .. } => {
+                                        cache.mark_ws_disconnected();
+                                    }
+                                    _ => {}
+                                }
+                            }
 
                             if matches!(event, GatewayEvent::ServerShutdown { .. }) {
                                 let _ = r_sig_tx.try_send(ConnSignal::ServerShutdown { conn_id });
@@ -611,6 +651,7 @@ async fn run_manager(
     rate_limits: Arc<RateLimitTracker>,
     clock_offset_ms: Arc<AtomicI64>,
     dedup: Arc<Mutex<EventDeduplicator>>,
+    balance_cache: Option<Arc<BalanceCache>>,
     event_tx: mpsc::Sender<GatewayEvent>,
     state_tx: watch::Sender<SessionState>,
     mut cmd_rx: mpsc::Receiver<ManagerCommand>,
@@ -650,6 +691,7 @@ async fn run_manager(
                             &rate_limits,
                             &clock_offset_ms,
                             &dedup,
+                            balance_cache.as_ref(),
                             &event_tx,
                             &sig_tx,
                         ).await;
@@ -666,6 +708,9 @@ async fn run_manager(
                         if let Some(conn) = active.take() {
                             conn.drain_and_close(config.drain_timeout).await;
                         }
+                        if let Some(ref cache) = balance_cache {
+                            cache.mark_ws_disconnected();
+                        }
                         let _ = state_tx.send(SessionState::Disconnected);
                         let _ = reply.send(());
                         break;
@@ -674,6 +719,9 @@ async fn run_manager(
                         let _ = state_tx.send(SessionState::Draining);
                         if let Some(conn) = active.take() {
                             conn.drain_and_close(config.drain_timeout).await;
+                        }
+                        if let Some(ref cache) = balance_cache {
+                            cache.mark_ws_disconnected();
                         }
                         let _ = state_tx.send(SessionState::Disconnected);
                         break;
@@ -691,6 +739,7 @@ async fn run_manager(
                         &rate_limits,
                         &clock_offset_ms,
                         &dedup,
+                        balance_cache.as_ref(),
                         &event_tx,
                         &sig_tx,
                     ).await {
@@ -715,6 +764,7 @@ async fn run_manager(
                                 &rate_limits,
                                 &clock_offset_ms,
                                 &dedup,
+                                balance_cache.as_ref(),
                                 &event_tx,
                                 &sig_tx,
                             ).await {
@@ -735,6 +785,9 @@ async fn run_manager(
                         }
                         warn!(conn_id, %reason, "active Spot WS API connection closed; reconnecting");
                         active = None;
+                        if let Some(ref cache) = balance_cache {
+                            cache.mark_ws_disconnected();
+                        }
                         let _ = state_tx.send(SessionState::Disconnected);
 
                         // Reconnect loop honoring backoff + retryAfter while still handling Shutdown.
@@ -783,6 +836,7 @@ async fn run_manager(
                                 &rate_limits,
                                 &clock_offset_ms,
                                 &dedup,
+                                balance_cache.as_ref(),
                                 &event_tx,
                                 &sig_tx,
                                 Some(&state_tx),
@@ -804,6 +858,17 @@ async fn run_manager(
                                         .await;
                                 }
                                 Err(err) => {
+                                    if !err.is_retryable()
+                                        && !matches!(err, GatewayError::IpBanned { .. })
+                                    {
+                                        warn!(
+                                            error = %err,
+                                            "Spot WS API reconnect hit non-retryable permanent error; halting reconnect loop"
+                                        );
+                                        let _ = state_tx.send(SessionState::Disconnected);
+                                        shutdown_requested = true;
+                                        break;
+                                    }
                                     warn!(error = %err, "Spot WS API reconnect attempt failed");
                                     let _ = state_tx.send(SessionState::Disconnected);
                                 }
@@ -830,6 +895,7 @@ async fn perform_make_before_break(
     rate_limits: &Arc<RateLimitTracker>,
     clock_offset_ms: &Arc<AtomicI64>,
     dedup: &Arc<Mutex<EventDeduplicator>>,
+    balance_cache: Option<&Arc<BalanceCache>>,
     event_tx: &mpsc::Sender<GatewayEvent>,
     sig_tx: &mpsc::Sender<ConnSignal>,
 ) -> Result<(), GatewayError> {
@@ -844,6 +910,7 @@ async fn perform_make_before_break(
         rate_limits,
         clock_offset_ms,
         dedup,
+        balance_cache,
         event_tx,
         sig_tx,
         None,

@@ -9,7 +9,8 @@ use bot_types::{Symbol, Venue, VenueCaps};
 use tokio::sync::{RwLock, mpsc};
 
 use crate::auth::Ed25519Credentials;
-use crate::error::{GatewayError, SessionState};
+use crate::balance_cache::{BalanceCache, BalanceProvenance, BalanceSource, CachedAccountSnapshot};
+use crate::error::{GatewayError, SessionState, enforce_order_rate_budget};
 use crate::gateway::{
     AccountSnapshot, ActivationReport, CancelOrderAck, CancelOrderListAck, CancelOrderListRequest,
     CancelOrderRequest, CancelReplaceAck, CancelReplaceRequest, ExchangeGateway,
@@ -17,7 +18,7 @@ use crate::gateway::{
     PlaceOrderRequest, QueryOrderRequest, VenueAdapter,
 };
 use crate::rate_limit::RateLimitTracker;
-use crate::spot::rest::SpotRestClient;
+use crate::spot::rest::{SpotRestClient, now_unix_ms};
 use crate::spot::session::{SpotSessionConfig, SpotWsSession};
 use crate::spot::wire::{
     build_account_status_params, build_cancel_list_params, build_cancel_order_params,
@@ -48,6 +49,9 @@ impl Default for SpotAdapterConfig {
     }
 }
 
+/// Default REST reconcile interval for the Spot WS-first balance cache (5 minutes).
+const DEFAULT_BALANCE_RECONCILE_INTERVAL_MS: u64 = 300_000;
+
 /// Binance Spot [`VenueAdapter`] combining REST bootstrap (`time`, `exchangeInfo`)
 /// and a single persistent WS API session (`order.*`, `orderList.*`, `account.status`,
 /// and `userDataStream.subscribe`).
@@ -56,6 +60,7 @@ pub struct SpotAdapter {
     rest: SpotRestClient,
     credentials: Arc<Ed25519Credentials>,
     rate_limits: Arc<RateLimitTracker>,
+    balance_cache: Arc<BalanceCache>,
     clock_offset_ms: Arc<AtomicI64>,
     session: RwLock<Option<SpotWsSession>>,
     cached_exchange_info: RwLock<Option<ExchangeInfoSnapshot>>,
@@ -92,6 +97,10 @@ impl SpotAdapter {
             rest,
             credentials: Arc::new(credentials),
             rate_limits,
+            balance_cache: Arc::new(BalanceCache::new(
+                Venue::Spot,
+                DEFAULT_BALANCE_RECONCILE_INTERVAL_MS,
+            )),
             clock_offset_ms: Arc::new(AtomicI64::new(0)),
             session: RwLock::new(None),
             cached_exchange_info: RwLock::new(None),
@@ -109,6 +118,47 @@ impl SpotAdapter {
     #[must_use]
     pub fn rate_limits(&self) -> &Arc<RateLimitTracker> {
         &self.rate_limits
+    }
+
+    /// Access the WS-first account balance cache for this Spot adapter.
+    #[must_use]
+    pub fn balance_cache(&self) -> &Arc<BalanceCache> {
+        &self.balance_cache
+    }
+
+    /// Return the current WS-cached account snapshot if fresh, otherwise fetch and seed from
+    /// [`ExchangeGateway::account_snapshot`].
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] if the cache is stale/unseeded and the fallback snapshot query fails.
+    pub async fn cached_account_snapshot(&self) -> Result<CachedAccountSnapshot, GatewayError> {
+        let now_ms = now_unix_ms();
+        let ws_ready = self.session_state().await == SessionState::Ready;
+        if let Some(cached) = self.balance_cache.get_if_fresh(ws_ready, now_ms) {
+            return Ok(cached);
+        }
+        let snapshot = self.account_snapshot().await?;
+        Ok(CachedAccountSnapshot {
+            snapshot,
+            provenance: BalanceProvenance {
+                source: BalanceSource::Rest,
+                age_ms: 0,
+            },
+        })
+    }
+
+    /// Return the current [`BalanceProvenance`] if the WS balance cache is currently fresh.
+    #[must_use]
+    pub fn balance_provenance(&self) -> Option<BalanceProvenance> {
+        let ws_ready = self
+            .session
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|s| s.state() == SessionState::Ready))
+            .unwrap_or(false);
+        self.balance_cache
+            .get_if_fresh(ws_ready, now_unix_ms())
+            .map(|c| c.provenance)
     }
 
     /// Current WS API session state (`SessionState::Disconnected` if inactive).
@@ -141,6 +191,7 @@ impl SpotAdapter {
 #[async_trait]
 impl ExchangeGateway for SpotAdapter {
     async fn place_order(&self, req: PlaceOrderRequest) -> Result<OrderAck, GatewayError> {
+        enforce_order_rate_budget(&self.rate_limits, now_unix_ms())?;
         let sess = self.active_session().await?;
         let params = build_place_order_params(
             &req,
@@ -168,6 +219,7 @@ impl ExchangeGateway for SpotAdapter {
         &self,
         req: CancelReplaceRequest,
     ) -> Result<CancelReplaceAck, GatewayError> {
+        enforce_order_rate_budget(&self.rate_limits, now_unix_ms())?;
         let sess = self.active_session().await?;
         let params = build_cancel_replace_params(
             &req,
@@ -185,6 +237,7 @@ impl ExchangeGateway for SpotAdapter {
     }
 
     async fn place_oco(&self, req: PlaceOcoRequest) -> Result<OcoOrderAck, GatewayError> {
+        enforce_order_rate_budget(&self.rate_limits, now_unix_ms())?;
         let sess = self.active_session().await?;
         let params = build_place_oco_params(
             &req,
@@ -254,7 +307,10 @@ impl ExchangeGateway for SpotAdapter {
         let params =
             build_account_status_params(sess.server_now_ms(), self.config.session.recv_window_ms);
         let val = sess.request("account.status", Some(params), None).await?;
-        parse_account_snapshot(&val)
+        let snap = parse_account_snapshot(&val)?;
+        self.balance_cache
+            .seed_from_rest(snap.clone(), now_unix_ms());
+        Ok(snap)
     }
 
     async fn exchange_info(&self) -> Result<ExchangeInfoSnapshot, GatewayError> {
@@ -286,11 +342,12 @@ impl VenueAdapter for SpotAdapter {
         let symbols_loaded = info.rules.len();
 
         // 3. Establish persistent WS API session (connect -> session.logon -> userDataStream.subscribe).
-        let (ws_session, rx, subscription_id) = SpotWsSession::connect(
+        let (ws_session, rx, subscription_id) = SpotWsSession::connect_with_balance_cache(
             self.config.session.clone(),
             Arc::clone(&self.credentials),
             Arc::clone(&self.rate_limits),
             Arc::clone(&self.clock_offset_ms),
+            Some(Arc::clone(&self.balance_cache)),
         )
         .await?;
 
@@ -309,6 +366,7 @@ impl VenueAdapter for SpotAdapter {
 
     async fn deactivate(&self) -> Result<(), GatewayError> {
         // Hard rule #7: deactivate cleanly closes the session and NEVER cancels protective orders.
+        self.balance_cache.mark_ws_disconnected();
         let existing = self.session.write().await.take();
         if let Some(sess) = existing {
             sess.shutdown().await;
@@ -373,5 +431,131 @@ mod tests {
         assert_eq!(weight.limit, 6000);
 
         server.await.expect("server join");
+    }
+
+    #[tokio::test]
+    async fn spot_adapter_enforces_order_rate_budget_at_90_pct() {
+        use bot_types::{OrderKind, Price, Qty, Side, Symbol};
+        use rust_decimal::Decimal;
+
+        use crate::error::GatewayError;
+        use crate::gateway::{
+            CancelReplaceMode, CancelReplaceRequest, PlaceOcoRequest, PlaceOrderRequest,
+        };
+        use crate::rate_limit::RateLimitRule;
+
+        let creds = Ed25519Credentials::from_seed("test-key".to_owned(), [3u8; 32]).expect("creds");
+        let adapter = SpotAdapter::new(SpotAdapterConfig::default(), creds).expect("adapter");
+
+        adapter.rate_limits().apply_rules(&[RateLimitRule {
+            rate_limit_type: RateLimitType::Orders,
+            interval: RateLimitInterval::Second,
+            interval_num: 10,
+            limit: 10,
+        }]);
+        adapter
+            .rate_limits()
+            .record_rest_header("X-MBX-ORDER-COUNT-10S", "9");
+
+        let place_err = adapter
+            .place_order(PlaceOrderRequest {
+                symbol: Symbol("BTCUSDT".into()),
+                side: Side::Buy,
+                kind: OrderKind::LimitMaker,
+                client_order_id: "b01r1S-000001-ENT".into(),
+                quantity: Some(Qty(Decimal::new(1, 3))),
+                quote_order_qty: None,
+                price: Some(Price(Decimal::from(50_000))),
+                stop_price: None,
+                time_in_force: None,
+            })
+            .await
+            .expect_err("90% order budget must block place_order");
+        assert!(matches!(
+            place_err,
+            GatewayError::RateLimited { status: 429, .. }
+        ));
+
+        let cr_err = adapter
+            .cancel_replace(CancelReplaceRequest {
+                symbol: Symbol("BTCUSDT".into()),
+                side: Side::Buy,
+                kind: OrderKind::LimitMaker,
+                cancel_replace_mode: CancelReplaceMode::StopOnFailure,
+                cancel_orig_client_order_id: Some("b01r1S-000001-ENT".into()),
+                cancel_order_id: None,
+                new_client_order_id: "b01r1S-000002-ENT".into(),
+                quantity: Qty(Decimal::new(1, 3)),
+                price: Some(Price(Decimal::from(50_000))),
+                time_in_force: None,
+            })
+            .await
+            .expect_err("90% order budget must block cancel_replace");
+        assert!(matches!(
+            cr_err,
+            GatewayError::RateLimited { status: 429, .. }
+        ));
+
+        let oco_err = adapter
+            .place_oco(PlaceOcoRequest {
+                symbol: Symbol("BTCUSDT".into()),
+                side: Side::Sell,
+                list_client_order_id: "b01r1S-000003-OCO".into(),
+                quantity: Qty(Decimal::new(1, 3)),
+                above_type: OrderKind::LimitMaker,
+                above_client_order_id: Some("b01r1S-000003-TP".into()),
+                above_price: Some(Price(Decimal::from(55_000))),
+                above_stop_price: None,
+                above_time_in_force: None,
+                below_type: OrderKind::StopLossLimit,
+                below_client_order_id: Some("b01r1S-000003-SL".into()),
+                below_price: Some(Price(Decimal::from(47_900))),
+                below_stop_price: Some(Price(Decimal::from(48_000))),
+                below_time_in_force: Some(crate::gateway::TimeInForce::Gtc),
+                below_trailing_delta: None,
+            })
+            .await
+            .expect_err("90% order budget must block place_oco");
+        assert!(matches!(
+            oco_err,
+            GatewayError::RateLimited { status: 429, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn spot_adapter_balance_cache_seeds_and_invalidates_on_deactivate() {
+        use bot_types::Venue;
+        use rust_decimal::Decimal;
+
+        use crate::gateway::{AccountBalance, AccountSnapshot, VenueAdapter};
+
+        let creds = Ed25519Credentials::from_seed("test-key".to_owned(), [4u8; 32]).expect("creds");
+        let adapter = SpotAdapter::new(SpotAdapterConfig::default(), creds).expect("adapter");
+        assert!(adapter.balance_provenance().is_none());
+
+        adapter.balance_cache().seed_from_rest(
+            AccountSnapshot {
+                venue: Venue::Spot,
+                can_trade: true,
+                update_time_ms: 1_000,
+                balances: vec![AccountBalance {
+                    asset: "USDT".into(),
+                    free: Decimal::from(1000),
+                    locked: Decimal::ZERO,
+                }],
+            },
+            super::now_unix_ms(),
+        );
+        // Without a ready WS session, balance_provenance remains None.
+        assert!(adapter.balance_provenance().is_none());
+
+        // Deactivate marks balance cache disconnected.
+        adapter.deactivate().await.expect("deactivate");
+        assert!(
+            adapter
+                .balance_cache()
+                .get_if_fresh(true, super::now_unix_ms())
+                .is_none()
+        );
     }
 }

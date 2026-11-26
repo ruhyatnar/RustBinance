@@ -343,6 +343,64 @@ impl FuturesRestClient {
         parse_cancel_algo_ack(&body, &req.symbol)
     }
 
+    /// Create a USDⓈ-M Futures User Data Stream `listenKey` (`POST /fapi/v1/listenKey`).
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] if credentials are missing or the HTTP/API request fails.
+    pub async fn create_listen_key(&self) -> Result<String, GatewayError> {
+        let body = self
+            .api_key_request(Method::POST, "/fapi/v1/listenKey")
+            .await?;
+        let parsed: RawListenKey =
+            serde_json::from_str(&body).map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+        if parsed.listen_key.is_empty() {
+            return Err(GatewayError::WireFormat(
+                "empty listenKey in /fapi/v1/listenKey response".into(),
+            ));
+        }
+        Ok(parsed.listen_key)
+    }
+
+    /// Extend the active USDⓈ-M Futures User Data Stream `listenKey` (`PUT /fapi/v1/listenKey`).
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] if credentials are missing or the HTTP/API request fails.
+    pub async fn keepalive_listen_key(&self) -> Result<(), GatewayError> {
+        let _body = self
+            .api_key_request(Method::PUT, "/fapi/v1/listenKey")
+            .await?;
+        Ok(())
+    }
+
+    /// Close the active USDⓈ-M Futures User Data Stream `listenKey` (`DELETE /fapi/v1/listenKey`).
+    ///
+    /// # Errors
+    /// Returns [`GatewayError`] if credentials are missing or the HTTP/API request fails.
+    pub async fn close_listen_key(&self) -> Result<(), GatewayError> {
+        let _body = self
+            .api_key_request(Method::DELETE, "/fapi/v1/listenKey")
+            .await?;
+        Ok(())
+    }
+
+    async fn api_key_request(&self, method: Method, path: &str) -> Result<String, GatewayError> {
+        let creds = self.creds.as_ref().ok_or_else(|| {
+            GatewayError::KeyLoad(
+                "FuturesRestClient requires Ed25519Credentials for user-data listenKey endpoints"
+                    .into(),
+            )
+        })?;
+        let url = format!("{}{path}", self.base_url);
+        let resp = self
+            .http
+            .request(method, &url)
+            .header("X-MBX-APIKEY", creds.api_key())
+            .send()
+            .await
+            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        self.check_response(resp).await
+    }
+
     async fn signed_request(
         &self,
         method: Method,
@@ -707,6 +765,12 @@ struct RawCancelAlgoAck {
     symbol: Option<String>,
     algo_id: i64,
     client_algo_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawListenKey {
+    listen_key: String,
 }
 
 #[cfg(test)]

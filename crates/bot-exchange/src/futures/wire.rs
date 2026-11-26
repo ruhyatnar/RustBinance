@@ -4,14 +4,15 @@
 
 use std::str::FromStr;
 
-use bot_types::{InstrumentRules, Price, Qty, Side, Symbol, Venue};
+use bot_types::{InstrumentRules, OrderKind, OrderStatus, Price, Qty, Side, Symbol, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::GatewayError;
 use crate::gateway::{
-    CancelAlgoOrderRequest, ExchangeInfoSnapshot, PlaceAlgoOrderRequest, validate_client_order_id,
+    AccountBalance, AccountEvent, CancelAlgoOrderRequest, ExchangeInfoSnapshot, ExecEvent,
+    GatewayEvent, PlaceAlgoOrderRequest, validate_client_order_id,
 };
 
 /// Parsed USDⓈ-M Futures User Data Stream events (`FUTURES_WSS.yaml`).
@@ -335,6 +336,267 @@ pub fn parse_futures_user_event(raw: &str) -> Result<FuturesUserEvent, GatewayEr
         other => Err(GatewayError::InvalidRequest(format!(
             "unsupported futures user event '{other}'"
         ))),
+    }
+}
+
+/// Parse a USDⓈ-M Futures User Data Stream JSON frame into a venue-agnostic [`GatewayEvent`].
+///
+/// Maps:
+/// - `ORDER_TRADE_UPDATE` -> `Some(GatewayEvent::Exec(_))`
+/// - `ACCOUNT_UPDATE` -> `Some(GatewayEvent::Account(AccountEvent::PositionUpdate { .. }))`
+/// - `ALGO_UPDATE` -> `Some(GatewayEvent::Exec(_))` (`exec_type = "ALGO_UPDATE"`)
+/// - `listenKeyExpired` -> `Some(GatewayEvent::StreamTerminated { .. })`
+/// - `MARGIN_CALL` / `ACCOUNT_CONFIG_UPDATE` -> `Ok(None)`
+///
+/// # Errors
+/// Returns [`GatewayError::WireFormat`] if the frame is malformed or contains an unrecognized event.
+#[allow(clippy::too_many_lines)]
+pub fn parse_futures_user_gateway_event(raw: &str) -> Result<Option<GatewayEvent>, GatewayError> {
+    let root: Value = serde_json::from_str(raw)
+        .map_err(|e| GatewayError::WireFormat(format!("invalid futures user event JSON: {e}")))?;
+    let event_type = root
+        .get("e")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::WireFormat("missing 'e' event type".into()))?;
+    let event_time_ms = root.get("E").and_then(Value::as_i64).unwrap_or(0);
+
+    match event_type {
+        "ORDER_TRADE_UPDATE" => {
+            let o = root
+                .get("o")
+                .ok_or_else(|| GatewayError::WireFormat("ORDER_TRADE_UPDATE missing 'o'".into()))?;
+            let sym_str = o
+                .get("s")
+                .and_then(Value::as_str)
+                .ok_or_else(|| GatewayError::WireFormat("missing 'o.s'".into()))?;
+            let side = parse_side(
+                o.get("S")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| GatewayError::WireFormat("missing 'o.S'".into()))?,
+            )
+            .map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+            let kind =
+                parse_futures_order_kind(o.get("o").and_then(Value::as_str).unwrap_or("LIMIT"));
+            let status_str = o.get("X").and_then(Value::as_str).unwrap_or("NEW");
+            let status = parse_futures_order_status(status_str);
+            let order_price = o
+                .get("p")
+                .and_then(Value::as_str)
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(Decimal::ZERO);
+            let order_qty = o
+                .get("q")
+                .and_then(Value::as_str)
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(Decimal::ZERO);
+            let last_filled_qty = parse_dec(
+                o.get("l")
+                    .ok_or_else(|| GatewayError::WireFormat("missing 'o.l'".into()))?,
+                "o.l",
+            )
+            .map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+            let cum_filled_qty = parse_dec(
+                o.get("z")
+                    .ok_or_else(|| GatewayError::WireFormat("missing 'o.z'".into()))?,
+                "o.z",
+            )
+            .map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+            let last_filled_price = parse_dec(
+                o.get("L")
+                    .ok_or_else(|| GatewayError::WireFormat("missing 'o.L'".into()))?,
+                "o.L",
+            )
+            .map_err(|e| GatewayError::WireFormat(e.to_string()))?;
+            let avg_price = o
+                .get("ap")
+                .and_then(Value::as_str)
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(last_filled_price);
+            let commission = o
+                .get("n")
+                .and_then(Value::as_str)
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(Decimal::ZERO);
+            let commission_asset = o
+                .get("N")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned);
+
+            Ok(Some(GatewayEvent::Exec(ExecEvent {
+                venue: Venue::UsdsFutures,
+                event_time_ms,
+                transact_time_ms: o.get("T").and_then(Value::as_i64).unwrap_or(event_time_ms),
+                symbol: Symbol(sym_str.to_owned()),
+                client_order_id: o
+                    .get("c")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                orig_client_order_id: None,
+                order_id: o.get("i").and_then(Value::as_i64).unwrap_or(0),
+                order_list_id: -1,
+                trade_id: o.get("t").and_then(Value::as_i64).unwrap_or(-1),
+                side,
+                kind,
+                exec_type: o
+                    .get("x")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                status,
+                reject_reason: "NONE".to_owned(),
+                order_price: Price(order_price),
+                order_qty: Qty(order_qty),
+                last_filled_qty: Qty(last_filled_qty),
+                cumulative_filled_qty: Qty(cum_filled_qty),
+                last_filled_price: Price(last_filled_price),
+                cumulative_quote_qty: cum_filled_qty.saturating_mul(avg_price),
+                commission,
+                commission_asset,
+                is_maker: o.get("m").and_then(Value::as_bool).unwrap_or(false),
+            })))
+        }
+        "ACCOUNT_UPDATE" => {
+            let last_update_ms = root
+                .get("T")
+                .and_then(Value::as_i64)
+                .unwrap_or(event_time_ms);
+            let mut balances = Vec::new();
+            if let Some(raw_balances) = root
+                .get("a")
+                .and_then(|a| a.get("B"))
+                .and_then(Value::as_array)
+            {
+                for entry in raw_balances {
+                    let Some(asset) = entry.get("a").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let wb = entry
+                        .get("wb")
+                        .and_then(Value::as_str)
+                        .and_then(|s| Decimal::from_str(s).ok())
+                        .unwrap_or(Decimal::ZERO);
+                    let cw = entry
+                        .get("cw")
+                        .and_then(Value::as_str)
+                        .and_then(|s| Decimal::from_str(s).ok());
+                    let free = cw.unwrap_or(wb);
+                    let locked = cw.map_or(Decimal::ZERO, |cross| {
+                        wb.saturating_sub(cross).max(Decimal::ZERO)
+                    });
+                    balances.push(AccountBalance {
+                        asset: asset.to_owned(),
+                        free,
+                        locked,
+                    });
+                }
+            }
+            Ok(Some(GatewayEvent::Account(AccountEvent::PositionUpdate {
+                venue: Venue::UsdsFutures,
+                event_time_ms,
+                last_update_ms,
+                balances,
+            })))
+        }
+        "ALGO_UPDATE" => {
+            let o = root
+                .get("o")
+                .ok_or_else(|| GatewayError::WireFormat("ALGO_UPDATE missing 'o'".into()))?;
+            let sym_str = o
+                .get("s")
+                .and_then(Value::as_str)
+                .ok_or_else(|| GatewayError::WireFormat("ALGO_UPDATE missing 'o.s'".into()))?;
+            let side = match o.get("S").and_then(Value::as_str) {
+                Some("SELL") => Side::Sell,
+                _ => Side::Buy,
+            };
+            let kind = parse_futures_order_kind(
+                o.get("o").and_then(Value::as_str).unwrap_or("STOP_MARKET"),
+            );
+            let algo_status = o.get("X").and_then(Value::as_str).unwrap_or("NEW");
+            let qty = o
+                .get("q")
+                .and_then(Value::as_str)
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(Decimal::ZERO);
+            let trigger_price = o
+                .get("tp")
+                .or_else(|| o.get("p"))
+                .and_then(Value::as_str)
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(Decimal::ZERO);
+
+            Ok(Some(GatewayEvent::Exec(ExecEvent {
+                venue: Venue::UsdsFutures,
+                event_time_ms,
+                transact_time_ms: o.get("T").and_then(Value::as_i64).unwrap_or(event_time_ms),
+                symbol: Symbol(sym_str.to_owned()),
+                client_order_id: o
+                    .get("caid")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                orig_client_order_id: None,
+                order_id: o.get("aid").and_then(Value::as_i64).unwrap_or(0),
+                order_list_id: -1,
+                trade_id: -1,
+                side,
+                kind,
+                exec_type: "ALGO_UPDATE".to_owned(),
+                status: parse_futures_algo_status(algo_status),
+                reject_reason: "NONE".to_owned(),
+                order_price: Price(trigger_price),
+                order_qty: Qty(qty),
+                last_filled_qty: Qty(Decimal::ZERO),
+                cumulative_filled_qty: Qty(Decimal::ZERO),
+                last_filled_price: Price(Decimal::ZERO),
+                cumulative_quote_qty: Decimal::ZERO,
+                commission: Decimal::ZERO,
+                commission_asset: None,
+                is_maker: false,
+            })))
+        }
+        "listenKeyExpired" => Ok(Some(GatewayEvent::StreamTerminated {
+            venue: Venue::UsdsFutures,
+            event_time_ms,
+        })),
+        "MARGIN_CALL" | "ACCOUNT_CONFIG_UPDATE" => Ok(None),
+        other => Err(GatewayError::WireFormat(format!(
+            "unsupported futures user event '{other}'"
+        ))),
+    }
+}
+
+fn parse_futures_order_kind(raw: &str) -> OrderKind {
+    match raw {
+        "MARKET" => OrderKind::Market,
+        "STOP" | "STOP_MARKET" | "TRAILING_STOP_MARKET" => OrderKind::StopLossLimit,
+        "TAKE_PROFIT" | "TAKE_PROFIT_MARKET" => OrderKind::TakeProfitLimit,
+        _ => OrderKind::Limit,
+    }
+}
+
+fn parse_futures_order_status(raw: &str) -> OrderStatus {
+    match raw {
+        "NEW" => OrderStatus::New,
+        "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
+        "FILLED" => OrderStatus::Filled,
+        "CANCELED" => OrderStatus::Canceled,
+        "REJECTED" => OrderStatus::Rejected,
+        "EXPIRED" | "EXPIRED_IN_MATCH" => OrderStatus::Expired,
+        _ => OrderStatus::UnknownNeedsQuery,
+    }
+}
+
+fn parse_futures_algo_status(raw: &str) -> OrderStatus {
+    match raw {
+        "NEW" | "TRIGGERING" => OrderStatus::New,
+        "TRIGGERED" | "FINISHED" => OrderStatus::Filled,
+        "CANCELED" => OrderStatus::Canceled,
+        "REJECTED" => OrderStatus::Rejected,
+        "EXPIRED" => OrderStatus::Expired,
+        _ => OrderStatus::UnknownNeedsQuery,
     }
 }
 

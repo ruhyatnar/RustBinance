@@ -319,6 +319,38 @@ impl GatewayError {
     }
 }
 
+/// Default client-side order rate-limit safety margin (90% of configured `ORDERS` ceiling).
+pub(crate) const ORDER_RATE_BUDGET_SAFETY_MARGIN_PCT: u8 = 90;
+
+/// Enforce the client-side order rate budget via [`crate::rate_limit::RateLimitTracker::can_place_order`].
+///
+/// # Errors
+/// Returns [`GatewayError::IpBanned`] during an active 418 cooldown or [`GatewayError::RateLimited`]
+/// when a 429 cooldown is active or any `ORDERS` bucket is at or above 90% capacity.
+pub(crate) fn enforce_order_rate_budget(
+    tracker: &crate::rate_limit::RateLimitTracker,
+    now_ms: i64,
+) -> Result<(), GatewayError> {
+    if let Err(exceeded) = tracker.can_place_order(now_ms, ORDER_RATE_BUDGET_SAFETY_MARGIN_PCT) {
+        let retry_after_ms = tracker
+            .retry_after_delay(now_ms)
+            .map(|d| now_ms.saturating_add(i64::try_from(d.as_millis()).unwrap_or(0)));
+        if tracker.is_ip_banned(now_ms) {
+            return Err(GatewayError::IpBanned {
+                retry_after_ms,
+                message: exceeded.to_string(),
+            });
+        }
+        return Err(GatewayError::RateLimited {
+            status: 429,
+            code: Some(-1003),
+            retry_after_ms,
+            message: exceeded.to_string(),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ExchangeErrorKind, GatewayError};

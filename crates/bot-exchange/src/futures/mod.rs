@@ -11,5 +11,5 @@ pub use rest::FuturesRestClient;
 pub use session::FuturesWsSession;
 pub use wire::{
     FuturesUserEvent, build_cancel_algo_order_params, build_place_algo_order_params,
-    parse_futures_exchange_info, parse_futures_user_event,
+    parse_futures_exchange_info, parse_futures_user_event, parse_futures_user_gateway_event,
 };
