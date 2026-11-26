@@ -170,4 +170,34 @@ pub enum ProbeSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Quantize and sign a synthetic entry/exit order locally (never transmits over network).
+    DryRunOrder {
+        /// Target venue (`spot` or `futures`).
+        #[arg(long, default_value = "spot")]
+        venue: String,
+        /// Symbol to dry-run (e.g. `BTCUSDT`).
+        #[arg(long, default_value = "BTCUSDT")]
+        symbol: String,
+        /// Use built-in offline symbol filter fixture (no network calls).
+        #[arg(long)]
+        offline: bool,
+        /// Optional explicit TOML configuration file path.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Probe WS-API authentication (Spot `session.logon` / Futures signed `v2/account.balance`) and close cleanly.
+    WsLogon {
+        /// Target venue (`spot` or `futures`).
+        #[arg(long, default_value = "spot")]
+        venue: String,
+        /// Optional explicit TOML configuration file path.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }

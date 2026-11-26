@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -14,11 +15,12 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bot_config::{BotConfig, ConfigSourcePaths, load_config, load_from_paths};
 use bot_exchange::auth::canonical_payload;
 use bot_exchange::{
-    Ed25519Credentials, ExchangeErrorKind, FuturesRestClient, GatewayError, RateLimitTracker,
-    SpotRestClient,
+    Ed25519Credentials, ExchangeErrorKind, FuturesRestClient, FuturesWsSession, GatewayError,
+    RateLimitTracker, SpotRestClient, SpotSessionConfig, SpotWsSession,
 };
-use bot_types::{TradingMode, Venue};
+use bot_types::{InstrumentRules, Price, Qty, RulesError, Symbol, TradingMode, Venue};
 use ed25519_dalek::{Signature, VerifyingKey};
+use rust_decimal::Decimal;
 use serde::Serialize;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -307,6 +309,337 @@ pub(crate) fn resolve_rest_base_url(
     }
 }
 
+/// Options for [`run_dry_run_order`].
+#[derive(Debug, Clone)]
+pub struct DryRunOrderOptions {
+    /// Target venue.
+    pub venue: Venue,
+    /// Trading symbol (e.g. `BTCUSDT`).
+    pub symbol: String,
+    /// Optional synthetic entry price (defaults to a sensible fixture price).
+    pub price: Option<Decimal>,
+    /// Optional synthetic entry quantity (defaults to a sensible fixture qty).
+    pub qty: Option<Decimal>,
+    /// Use built-in offline `InstrumentRules` fixture without opening any network socket.
+    pub offline: bool,
+    /// Optional explicit TOML configuration path.
+    pub config: Option<PathBuf>,
+    /// Optional REST base URL override (tests).
+    pub rest_url_override: Option<String>,
+}
+
+/// Result of `binance-botctl probe dry-run-order`. Never transmits any order.
+#[derive(Debug, Clone, Serialize)]
+pub struct DryRunOrderReport {
+    /// Target venue.
+    pub venue: Venue,
+    /// Normalized symbol.
+    pub symbol: String,
+    /// Entry price quantized to `PRICE_FILTER.tickSize`.
+    pub quantized_price: Decimal,
+    /// Entry quantity quantized to `LOT_SIZE.stepSize`.
+    pub quantized_qty: Decimal,
+    /// Resulting notional (`quantized_price * quantized_qty`).
+    pub notional_usd: Decimal,
+    /// Canonical REST entry query preview (never contains secrets).
+    pub rest_entry_query_preview: String,
+    /// WS API entry method name.
+    pub ws_entry_method: String,
+    /// WS API protective exit method name (`orderList.place.oco` or `algoOrder.place`).
+    pub ws_exit_method: String,
+    /// Whether the locally generated Ed25519 signature passed strict verification.
+    pub signature_verified_locally: bool,
+    /// Always `false` — no order is ever transmitted over the network.
+    pub transmitted: bool,
+}
+
+impl DryRunOrderReport {
+    /// Render as concise human-readable text.
+    #[must_use]
+    pub fn render_text(&self) -> String {
+        format!(
+            "probe dry-run-order ({:?} {}) [PASS — NOT TRANSMITTED]\n  price: {} | qty: {} | notional: ${}\n  ws entry: {} | ws exit: {}\n  signature verified locally: {}\n  rest preview: {}",
+            self.venue,
+            self.symbol,
+            self.quantized_price,
+            self.quantized_qty,
+            self.notional_usd,
+            self.ws_entry_method,
+            self.ws_exit_method,
+            self.signature_verified_locally,
+            self.rest_entry_query_preview
+        )
+    }
+}
+
+fn offline_fixture_rules(venue: Venue, symbol: &str) -> InstrumentRules {
+    let (step_size, min_notional, base_precision) = match venue {
+        Venue::Spot => (Decimal::new(1, 5), Decimal::from(10), 5),
+        Venue::UsdsFutures => (Decimal::new(1, 3), Decimal::from(5), 3),
+    };
+    InstrumentRules {
+        venue,
+        symbol: Symbol(symbol.to_owned()),
+        tick_size: Decimal::new(1, 2),
+        step_size,
+        min_qty: step_size,
+        max_qty: Decimal::from(1_000),
+        min_notional,
+        status_trading: true,
+        base_precision,
+        quote_precision: 2,
+    }
+}
+
+async fn fetch_instrument_rules(
+    opts: &DryRunOrderOptions,
+    symbol: &str,
+) -> Result<InstrumentRules> {
+    if opts.offline {
+        return Ok(offline_fixture_rules(opts.venue, symbol));
+    }
+    let cfg = load_probe_config(opts.config.as_deref())?;
+    let base_url = resolve_rest_base_url(&cfg, opts.venue, opts.rest_url_override.as_deref());
+    let info = match opts.venue {
+        Venue::Spot => {
+            let client = SpotRestClient::new(&base_url, PROBE_TIMEOUT)
+                .map_err(|e| anyhow::anyhow!("SpotRestClient init failed: {e}"))?;
+            client
+                .exchange_info()
+                .await
+                .map_err(|e| anyhow::anyhow!("Spot exchangeInfo failed: {e}"))?
+        }
+        Venue::UsdsFutures => {
+            let client = FuturesRestClient::new(
+                &base_url,
+                PROBE_TIMEOUT,
+                None,
+                Arc::new(RateLimitTracker::new()),
+            )
+            .map_err(|e| anyhow::anyhow!("FuturesRestClient init failed: {e}"))?;
+            client
+                .exchange_info()
+                .await
+                .map_err(|e| anyhow::anyhow!("Futures exchangeInfo failed: {e}"))?
+        }
+    };
+    info.rules
+        .into_iter()
+        .find(|r| r.symbol.as_str() == symbol)
+        .with_context(|| format!("symbol {symbol} not found in {:?} exchangeInfo", opts.venue))
+}
+
+/// Quantize a synthetic entry/exit order against `exchangeInfo` (or offline fixture) and
+/// verify Ed25519 payload signing locally without transmitting any order.
+///
+/// # Errors
+/// Returns an error if filter quantization/validation fails (`RulesError`) or exchange info fetch fails.
+pub async fn run_dry_run_order(opts: &DryRunOrderOptions) -> Result<DryRunOrderReport> {
+    let symbol = opts.symbol.trim().to_ascii_uppercase();
+    let rules = fetch_instrument_rules(opts, &symbol).await?;
+
+    let raw_price = opts.price.unwrap_or_else(|| Decimal::from(50_000));
+    let raw_qty = opts.qty.unwrap_or_else(|| Decimal::new(1, 2));
+
+    let quantized_price = rules.floor_price(Price(raw_price))?.0;
+    let quantized_qty = rules.floor_qty(Qty(raw_qty))?.0;
+    rules.validate_order(Price(quantized_price), Qty(quantized_qty))?;
+    let notional = quantized_price
+        .checked_mul(quantized_qty)
+        .ok_or(RulesError::ArithmeticOverflow)?;
+
+    let creds = if let Some(cfg_path) = opts.config.as_deref() {
+        let cfg = load_probe_config(Some(cfg_path))?;
+        load_venue_credentials(&cfg, opts.venue)?
+    } else {
+        Ed25519Credentials::from_seed("dry-run-ephemeral".to_owned(), [0x42_u8; 32])
+            .map_err(|e| anyhow::anyhow!("ephemeral credential init failed: {e}"))?
+    };
+
+    let mut params = BTreeMap::new();
+    params.insert(
+        "newClientOrderId".to_owned(),
+        "dryrun_probe_entry_1".to_owned(),
+    );
+    params.insert("price".to_owned(), quantized_price.normalize().to_string());
+    params.insert("quantity".to_owned(), quantized_qty.normalize().to_string());
+    params.insert("side".to_owned(), "BUY".to_owned());
+    params.insert("symbol".to_owned(), symbol.clone());
+    params.insert(
+        "timeInForce".to_owned(),
+        match opts.venue {
+            Venue::Spot => "GTC".to_owned(),
+            Venue::UsdsFutures => "GTX".to_owned(),
+        },
+    );
+    params.insert("timestamp".to_owned(), "1700000000000".to_owned());
+    params.insert(
+        "type".to_owned(),
+        match opts.venue {
+            Venue::Spot => "LIMIT_MAKER".to_owned(),
+            Venue::UsdsFutures => "LIMIT".to_owned(),
+        },
+    );
+
+    let sig_b64 = creds.sign_params(&params);
+    let sig_bytes = BASE64_STANDARD
+        .decode(sig_b64.as_bytes())
+        .context("dry-run signature base64 decode failed")?;
+    let sig = Signature::from_slice(&sig_bytes).context("invalid Ed25519 signature")?;
+    let vk = VerifyingKey::from_bytes(&creds.public_key_bytes())
+        .context("invalid Ed25519 verifying key")?;
+    let payload = canonical_payload(&params);
+    vk.verify_strict(payload.as_bytes(), &sig)
+        .context("dry-run order signature failed strict verification")?;
+
+    let ws_exit_method = match opts.venue {
+        Venue::Spot => "orderList.place.oco".to_owned(),
+        Venue::UsdsFutures => "algoOrder.place".to_owned(),
+    };
+
+    Ok(DryRunOrderReport {
+        venue: opts.venue,
+        symbol,
+        quantized_price,
+        quantized_qty,
+        notional_usd: notional,
+        rest_entry_query_preview: format!("{payload}&signature=<verified-ed25519-sig>"),
+        ws_entry_method: "order.place".to_owned(),
+        ws_exit_method,
+        signature_verified_locally: true,
+        transmitted: false,
+    })
+}
+
+/// Options for [`run_ws_logon_probe`].
+#[derive(Debug, Clone)]
+pub struct WsLogonProbeOptions {
+    /// Target venue.
+    pub venue: Venue,
+    /// Optional explicit TOML configuration path.
+    pub config: Option<PathBuf>,
+    /// Optional WebSocket API URL override (tests).
+    pub ws_url_override: Option<String>,
+}
+
+/// Result of `binance-botctl probe ws-logon`.
+#[derive(Debug, Clone, Serialize)]
+pub struct WsLogonProbeReport {
+    /// Target venue.
+    pub venue: Venue,
+    /// WebSocket API endpoint probed.
+    pub endpoint: String,
+    /// `"session.logon"` (Spot) or `"per_request_ed25519"` (Futures).
+    pub auth_mode: String,
+    /// Whether authentication succeeded.
+    pub authenticated: bool,
+    /// Whether the session closed cleanly.
+    pub closed_cleanly: bool,
+    /// Explanatory note (e.g. Futures per-request signing model).
+    pub note: String,
+}
+
+impl WsLogonProbeReport {
+    /// Render as concise human-readable text.
+    #[must_use]
+    pub fn render_text(&self) -> String {
+        format!(
+            "probe ws-logon ({:?}) [{}]\n  endpoint: {}\n  auth_mode: {}\n  closed_cleanly: {}\n  note: {}",
+            self.venue,
+            if self.authenticated && self.closed_cleanly {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+            self.endpoint,
+            self.auth_mode,
+            self.closed_cleanly,
+            self.note
+        )
+    }
+}
+
+/// Probe WS-API authentication and immediately close the session cleanly.
+///
+/// - Spot (`/ws-api/v3`): connects via [`SpotWsSession`] (`session.logon`) and shuts down.
+/// - Futures (`/ws-fapi/v1`): connects via [`FuturesWsSession`], runs read-only signed
+///   `v2/account.balance` (since Futures WS API has no `session.logon`), and closes.
+///
+/// # Errors
+/// Returns an error if credentials, handshake, or WS authentication fails.
+pub async fn run_ws_logon_probe(opts: &WsLogonProbeOptions) -> Result<WsLogonProbeReport> {
+    let cfg = load_probe_config(opts.config.as_deref())?;
+    let creds = Arc::new(load_venue_credentials(&cfg, opts.venue)?);
+    verify_local_ed25519_signing(&creds)?;
+
+    let endpoint =
+        opts.ws_url_override
+            .clone()
+            .unwrap_or_else(|| match (opts.venue, cfg.general.mode) {
+                (Venue::Spot, TradingMode::Live) => {
+                    "wss://ws-api.binance.com:443/ws-api/v3".to_owned()
+                }
+                (Venue::Spot, _) => "wss://ws-api.testnet.binance.vision:443/ws-api/v3".to_owned(),
+                (Venue::UsdsFutures, TradingMode::Live) => {
+                    "wss://ws-fapi.binance.com/ws-fapi/v1".to_owned()
+                }
+                (Venue::UsdsFutures, _) => "wss://testnet.binancefuture.com/ws-fapi/v1".to_owned(),
+            });
+
+    match opts.venue {
+        Venue::Spot => {
+            let ws_cfg = SpotSessionConfig {
+                ws_url: endpoint.clone(),
+                request_timeout: PROBE_TIMEOUT,
+                recv_window_ms: Some(cfg.binance.recv_window_ms),
+                ..SpotSessionConfig::default()
+            };
+            let (session, _events, _sub_id) = SpotWsSession::connect(
+                ws_cfg,
+                creds,
+                Arc::new(RateLimitTracker::new()),
+                Arc::new(AtomicI64::new(0)),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Spot WS session.logon failed: {e}"))?;
+            session.shutdown().await;
+            Ok(WsLogonProbeReport {
+                venue: Venue::Spot,
+                endpoint,
+                auth_mode: "session.logon".to_owned(),
+                authenticated: true,
+                closed_cleanly: true,
+                note: "Spot WS API session.logon succeeded and session shut down cleanly"
+                    .to_owned(),
+            })
+        }
+        Venue::UsdsFutures => {
+            let session = FuturesWsSession::new(
+                endpoint.clone(),
+                creds,
+                Arc::new(RateLimitTracker::new()),
+                PROBE_TIMEOUT,
+            );
+            session
+                .connect()
+                .await
+                .map_err(|e| anyhow::anyhow!("Futures WS connect failed: {e}"))?;
+            let res = session.request("v2/account.balance", BTreeMap::new()).await;
+            session.close().await;
+            res.map_err(|e| anyhow::anyhow!("Futures WS v2/account.balance failed: {e}"))?;
+            Ok(WsLogonProbeReport {
+                venue: Venue::UsdsFutures,
+                endpoint,
+                auth_mode: "per_request_ed25519".to_owned(),
+                authenticated: true,
+                closed_cleanly: true,
+                note: "USD-M Futures WS API (/ws-fapi/v1) has no session.logon; verified per-request Ed25519 auth via read-only v2/account.balance"
+                    .to_owned(),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -505,5 +838,150 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("ed25519")
         );
+    }
+
+    #[tokio::test]
+    async fn dry_run_order_offline_quantizes_and_verifies_signature_without_network() {
+        use super::{DryRunOrderOptions, run_dry_run_order};
+        use rust_decimal::Decimal;
+
+        for (venue, expected_exit) in [
+            (Venue::Spot, "orderList.place.oco"),
+            (Venue::UsdsFutures, "algoOrder.place"),
+        ] {
+            let report = run_dry_run_order(&DryRunOrderOptions {
+                venue,
+                symbol: "BTCUSDT".to_owned(),
+                price: Some(Decimal::new(50_000_123, 3)),
+                qty: Some(Decimal::new(12_345, 6)),
+                offline: true,
+                config: None,
+                rest_url_override: None,
+            })
+            .await
+            .unwrap();
+            assert!(!report.transmitted);
+            assert!(report.signature_verified_locally);
+            assert_eq!(report.ws_exit_method, expected_exit);
+            assert!(
+                !report
+                    .rest_entry_query_preview
+                    .contains("BEGIN PRIVATE KEY")
+            );
+            assert!(report.notional_usd >= Decimal::from(10));
+        }
+    }
+
+    #[tokio::test]
+    async fn dry_run_order_rejects_notional_below_min() {
+        use super::{DryRunOrderOptions, run_dry_run_order};
+        use rust_decimal::Decimal;
+
+        let err = run_dry_run_order(&DryRunOrderOptions {
+            venue: Venue::Spot,
+            symbol: "BTCUSDT".to_owned(),
+            price: Some(Decimal::from(100)),
+            qty: Some(Decimal::new(1, 5)),
+            offline: true,
+            config: None,
+            rest_url_override: None,
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").to_ascii_lowercase().contains("notional"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_logon_probe_spot_succeeds_and_closes_cleanly_against_mock_ws() {
+        use super::{WsLogonProbeOptions, run_ws_logon_probe};
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (_dir, cfg) = make_venue_config("testnet");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                let req: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                let method = req
+                    .get("method")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let result = if method == "userDataStream.subscribe" {
+                    serde_json::json!({"subscriptionId": 1})
+                } else {
+                    serde_json::json!({"authorizedSince": 1_700_000_000_000_i64})
+                };
+                let resp = serde_json::json!({"id": id, "status": 200, "result": result});
+                let _ = ws.send(Message::Text(resp.to_string().into())).await;
+            }
+        });
+
+        let report = run_ws_logon_probe(&WsLogonProbeOptions {
+            venue: Venue::Spot,
+            config: Some(cfg),
+            ws_url_override: Some(format!("ws://{addr}")),
+        })
+        .await
+        .unwrap();
+        server.abort();
+
+        assert!(report.authenticated);
+        assert!(report.closed_cleanly);
+        assert_eq!(report.auth_mode, "session.logon");
+    }
+
+    #[tokio::test]
+    async fn ws_logon_probe_futures_uses_per_request_v2_account_balance_against_mock_ws() {
+        use super::{WsLogonProbeOptions, run_ws_logon_probe};
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (_dir, cfg) = make_venue_config("testnet");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut saw_balance = false;
+            if let Some(Ok(Message::Text(text))) = ws.next().await {
+                let req: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                let method = req
+                    .get("method")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let has_sig = req
+                    .get("params")
+                    .and_then(|p| p.get("signature"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some();
+                saw_balance = method == "v2/account.balance" && has_sig;
+                let resp = serde_json::json!({"id": id, "status": 200, "result": []});
+                let _ = ws.send(Message::Text(resp.to_string().into())).await;
+            }
+            saw_balance
+        });
+
+        let report = run_ws_logon_probe(&WsLogonProbeOptions {
+            venue: Venue::UsdsFutures,
+            config: Some(cfg),
+            ws_url_override: Some(format!("ws://{addr}")),
+        })
+        .await
+        .unwrap();
+        let saw_balance = server.await.unwrap();
+
+        assert!(saw_balance);
+        assert!(report.authenticated);
+        assert!(report.closed_cleanly);
+        assert_eq!(report.auth_mode, "per_request_ed25519");
+        assert!(report.note.contains("session.logon"));
     }
 }

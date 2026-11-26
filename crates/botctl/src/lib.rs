@@ -244,6 +244,49 @@ async fn run_probe(subcommand: ProbeSubcommand) -> Result<String> {
             };
             report_result(report.ok, out)
         }
+        ProbeSubcommand::DryRunOrder {
+            venue,
+            symbol,
+            offline,
+            config,
+            json,
+        } => {
+            let venue = parse_venue_arg(&venue)?;
+            let report = probes::run_dry_run_order(&probes::DryRunOrderOptions {
+                venue,
+                symbol,
+                price: None,
+                qty: None,
+                offline,
+                config,
+                rest_url_override: None,
+            })
+            .await?;
+            if json {
+                Ok(serde_json::to_string_pretty(&report)?)
+            } else {
+                Ok(report.render_text())
+            }
+        }
+        ProbeSubcommand::WsLogon {
+            venue,
+            config,
+            json,
+        } => {
+            let venue = parse_venue_arg(&venue)?;
+            let report = probes::run_ws_logon_probe(&probes::WsLogonProbeOptions {
+                venue,
+                config,
+                ws_url_override: None,
+            })
+            .await?;
+            let out = if json {
+                serde_json::to_string_pretty(&report)?
+            } else {
+                report.render_text()
+            };
+            report_result(report.authenticated && report.closed_cleanly, out)
+        }
     }
 }
 
